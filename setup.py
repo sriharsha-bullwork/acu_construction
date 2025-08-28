@@ -13,7 +13,6 @@ setup(
         # Launch files (added sim_nav2_waypoints.launch.py)
         ('share/' + package_name + '/launch', [
             'launch/nav2_tb3.launch.py',
-            'launch/waypoints.launch.py',
             'launch/sim_nav2_waypoints.launch.py'
         ]),
         # Existing params + new Nav2 config (nav2_params.yaml + BT file)
