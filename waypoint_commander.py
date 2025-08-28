@@ -127,7 +127,7 @@ class Commander(Node):
         self.waypoints = [
             make_pose(5.0, 0.0,   0.0,  stamp=now),
             make_pose(15.0, 1.0,  90.0,  stamp=now),
-            make_pose(0.0, 5.0, 180.0,  stamp=now),
+            make_pose(0.0, 5.0, 180.0,  stamp=now),p
             make_pose(0.0, 0.0, -90.0,  stamp=now),
         ]
 
