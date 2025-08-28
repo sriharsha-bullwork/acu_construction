@@ -14,6 +14,18 @@ def generate_launch_description():
     # Ensure TurtleBot3 model is Burger
     set_tb3_model = SetEnvironmentVariable(name='TURTLEBOT3_MODEL', value='burger')
 
+    # RViz: use Nav2's default layout
+    pkg_nav2 = Path(get_package_share_directory('nav2_bringup'))
+    rviz_cfg = str(pkg_nav2 / 'rviz' / 'nav2_default_view.rviz')
+
+    rviz2 = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_cfg]
+    )
+
     # Gazebo: empty world + TB3 (provided by turtlebot3_gazebo)
     tb3_gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -30,10 +42,9 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Paths to our params and BT
+    # Paths to params
     pkg_share = Path(get_package_share_directory('construction'))
     nav2_params = str(pkg_share / 'config' / 'nav2_params.yaml')
-    bt_file = str(pkg_share / 'config' / 'bt_strict_through_poses.xml')
 
     # Nav2 core nodes (NO map_server, NO amcl)
     controller_server = Node(
@@ -73,9 +84,8 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        parameters=[{'use_sim_time': use_sim_time,
-                     'default_bt_xml_filename': bt_file},
-                    nav2_params]
+        # IMPORTANT: do NOT override the BT file here; we set both defaults in YAML below
+        parameters=[{'use_sim_time': use_sim_time}, nav2_params]
     )
 
     waypoint_follower = Node(
@@ -118,5 +128,6 @@ def generate_launch_description():
         smoother_server,
         bt_navigator,
         waypoint_follower,
-        lifecycle_manager
+        lifecycle_manager,
+        rviz2
     ])

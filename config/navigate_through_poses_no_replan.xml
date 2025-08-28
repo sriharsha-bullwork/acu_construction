@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="navigate_through_poses_no_replan">
+
+      <!-- PLAN ONCE FOR ALL POSES -->
+      <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+
+      <!-- FOLLOW + RECOVER (no replan inside the loop) -->
+      <RecoveryNode number_of_retries="10" name="recovery_no_replan">
+        <RoundRobin name="follow_and_recover_loop">
+
+          <RateController hz="10.0">
+            <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+          </RateController>
+
+          <Sequence name="clear_then_wait">
+            <ClearEntirelyCostmap name="clear_local"  service_name="/local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntirelyCostmap name="clear_global" service_name="/global_costmap/clear_entirely_global_costmap"/>
+            <Wait seconds="1.0"/>
+          </Sequence>
+
+          <Spin spin_dist="1.5708"/>
+          <Wait seconds="0.5"/>
+
+        </RoundRobin>
+      </RecoveryNode>
+
+      <GoalReached/>
+
+    </PipelineSequence>
+  </BehaviorTree>
+</root>

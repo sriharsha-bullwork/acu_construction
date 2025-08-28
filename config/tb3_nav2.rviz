@@ -1,0 +1,23 @@
+Panels:
+  - Class: rviz_common/Displays
+  - Class: rviz_common/Tool Properties
+Visualization Manager:
+  Global Options:
+    Fixed Frame: map
+  Displays:
+    - Name: TF
+      Class: rviz_default_plugins/TF
+    - Name: LaserScan
+      Class: rviz_default_plugins/LaserScan
+      Topic: /scan
+    - Name: GlobalCostmap
+      Class: rviz_default_plugins/Map
+      Topic: /global_costmap/costmap
+    - Name: LocalCostmap
+      Class: rviz_default_plugins/Map
+      Topic: /local_costmap/costmap
+    - Name: RobotModel
+      Class: rviz_default_plugins/RobotModel
+Tools:
+  - Class: nav2_rviz_plugins/GoalTool
+  - Class: nav2_rviz_plugins/InitialPoseTool
