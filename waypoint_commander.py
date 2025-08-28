@@ -1,203 +1,285 @@
 #!/usr/bin/env python3
-import math, sys, threading, subprocess, shlex
+import sys, math, select, termios, tty, time
+from typing import List, Optional
+
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
+
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from lifecycle_msgs.srv import GetState
+from lifecycle_msgs.msg import State
 import tf_transformations
 
-def q_from_yaw(yaw):
-    q = tf_transformations.quaternion_from_euler(0.0, 0.0, yaw)
+# --------- Tunables ---------
+BLOCK_TIMEOUT_SEC = 60.0   # max wait per blockage
+PROGRESS_EPS_M   = 0.03    # required improvement in distance to count as progress
+RETRY_PER_GOAL   = 1       # automatic retries per goal after a failure
+# ----------------------------
+
+def q_from_yaw(yaw_rad: float) -> Quaternion:
+    q = tf_transformations.quaternion_from_euler(0.0, 0.0, yaw_rad)
     return Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
-def make_pose(x, y, yaw_deg, frame="map", stamp=None):
+def make_pose(x: float, y: float, yaw_deg: float, frame: str = "map") -> PoseStamped:
     p = PoseStamped()
     p.header.frame_id = frame
-    if stamp is not None:
-        p.header.stamp = stamp
     p.pose.position.x = float(x)
     p.pose.position.y = float(y)
     p.pose.position.z = 0.0
-    p.pose.orientation = q_from_yaw(math.radians(yaw_deg))
+    p.pose.orientation = q_from_yaw(math.radians(float(yaw_deg)))
     return p
 
-def shell(cmd: str, timeout: float = 3.0):
-    try:
-        subprocess.run(shlex.split(cmd), check=True, timeout=timeout)
-        return True
-    except Exception as e:
-        print(f"[shell] {cmd} -> {e}")
-        return False
-
 class Commander(Node):
-    def __init__(self):
+    def __init__(self, waypoints: List[PoseStamped]) -> None:
         super().__init__("waypoint_commander")
         self.nav = BasicNavigator()
+        self.waypoints = waypoints
+        self.idx = 0
+
+        self.current_goal: Optional[PoseStamped] = None
+        self.paused = False
+
+        # retry budget per goal (after a FAIL/CANCEL)
+        self.retry_used = 0
+
+        # progress / blockage tracking (per-goal)
+        self._last_dist: Optional[float] = None
+        self._last_progress_ts: float = time.monotonic()
+        self._forced_cancel_for_block = False  # mark when we cancel due to 60s block
+
+    # ---------- Bringup ----------
+    def wait_for_bt_navigator_active(self) -> None:
+        svc_name = "/bt_navigator/get_state"
+        cli = self.create_client(GetState, svc_name)
 
         print("Waiting for Nav2 (bt_navigator) to activate...")
-        # matches your installed commander
-        self.nav._waitForNodeToActivate("bt_navigator")
-        print("Nav2 is active.")
+        while rclpy.ok() and not cli.wait_for_service(timeout_sec=1.0):
+            print("[wait] bt_navigator/get_state service not available, waiting...")
 
-        self.paused = False
-        self.cancel_requested = False
-        self.quit_requested = False
-        self.soft_reset_requested = False
-        self.idx = 0
-        self.waypoints = []
-
-        # Input thread
-        threading.Thread(target=self._input_loop, daemon=True).start()
-
-    def _input_loop(self):
-        print("\nControls: [p]=pause  [r]=resume  [c]=cancel+skip  [x]=clear local costmap  [z]=soft reset  [q]=quit\n")
-        for line in sys.stdin:
-            cmd = line.strip().lower()
-            if cmd == 'p':
-                self.paused = True
-                self.nav.cancelTask()
-                print("Paused current goal.")
-            elif cmd == 'r':
-                if self.paused:
-                    self.paused = False
-                    print("Resuming…")
-                else:
-                    print("Not paused.")
-            elif cmd == 'c':
-                self.cancel_requested = True
-                self.nav.cancelTask()
-                print("Canceled current goal (will skip to next).")
-            elif cmd == 'x':
-                self.clear_local_costmap()
-            elif cmd == 'z':
-                self.soft_reset_requested = True
-                self.nav.cancelTask()
-                print("Soft reset requested (cancel + clear local/global).")
-            elif cmd == 'q':
-                self.quit_requested = True
-                self.nav.cancelTask()
-                print("Quitting after current action…")
-                break
-
-    # --- Utilities that avoid client collisions ---
-
-    def clear_local_costmap(self):
-        if hasattr(self.nav, "clearLocalCostmap"):
+        req = GetState.Request()
+        while rclpy.ok():
+            future = cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+            if not future.done():
+                time.sleep(0.5)
+                continue
             try:
-                self.nav.clearLocalCostmap()
-                print("Local costmap cleared (navigator).")
-                return
-            except Exception as e:
-                print(f"navigator.clearLocalCostmap failed: {e}")
-        # Fallback via CLI
-        ok = shell("ros2 service call /local_costmap/clear_entirely_local_costmap std_srvs/srv/Empty {}")
-        print("Local costmap cleared (CLI)." if ok else "Local costmap clear failed.")
+                state = future.result().current_state
+            except Exception:
+                time.sleep(0.5)
+                continue
 
-    def clear_all_costmaps(self):
-        if hasattr(self.nav, "clearAllCostmaps"):
+            if state.id == State.PRIMARY_STATE_ACTIVE:
+                print("Nav2 is active.")
+                return
+            else:
+                print(f"[wait] bt_navigator state = {state.label} ({state.id}); waiting...")
+                time.sleep(1.0)
+
+    def set_initial_pose(self, pose: PoseStamped) -> None:
+        self.nav.setInitialPose(pose)
+        time.sleep(0.5)  # settle
+
+    # ---------- Helpers ----------
+    def _reset_progress_tracker(self):
+        self._last_dist = None
+        self._last_progress_ts = time.monotonic()
+        self._forced_cancel_for_block = False
+
+    def _update_progress(self, dist_now: float):
+        now = time.monotonic()
+        if self._last_dist is None:
+            self._last_dist = dist_now
+            self._last_progress_ts = now
+            return
+
+        # Progress if distance decreased enough
+        if (self._last_dist - dist_now) >= PROGRESS_EPS_M:
+            self._last_progress_ts = now
+            self._last_dist = dist_now
+        else:
+            # No significant progress; check blockage timeout
+            if (now - self._last_progress_ts) > BLOCK_TIMEOUT_SEC:
+                print(f"\nBlocked > {BLOCK_TIMEOUT_SEC:.0f}s — aborting current attempt.")
+                self.cancel_current(silent=True)
+                self._forced_cancel_for_block = True
+                # After cancel, BasicNavigator will mark task complete -> result=CANCELED on next tick
+
+    # ---------- Goal control ----------
+    def send_goal(self, goal: PoseStamped):
+        goal.header.stamp = self.get_clock().now().to_msg()
+        self.current_goal = goal
+        self._reset_progress_tracker()
+        self.nav.goToPose(goal)
+        print(f"Going to waypoint {self.idx+1}/{len(self.waypoints)}")
+
+    def cancel_current(self, silent: bool = False):
+        if self.current_goal is not None:
             try:
-                self.nav.clearAllCostmaps()
-                print("All costmaps cleared (navigator).")
-                return
-            except Exception as e:
-                print(f"navigator.clearAllCostmaps failed: {e}")
-        # Fallback via CLI (local + global)
-        shell("ros2 service call /local_costmap/clear_entirely_local_costmap std_srvs/srv/Empty {}")
-        shell("ros2 service call /global_costmap/clear_entirely_global_costmap std_srvs/srv/Empty {}")
-        print("All costmaps cleared (CLI).")
+                self.nav.cancelTask()
+            except Exception:
+                pass
+            if not silent:
+                print("Canceled current task.")
 
-    def soft_reset_nav2(self):
-        """
-        Non-destructive reset: cancel task, clear costmaps.
-        (Lifecycle flip is overkill in sim; relaunch if truly wedged.)
-        """
-        self.nav.cancelTask()
-        self.clear_all_costmaps()
-        # brief spin to process any transitions
-        rclpy.spin_once(self, timeout_sec=0.1)
+    def clear_local(self):
+        try:
+            self.nav.clearLocalCostmap()
+        finally:
+            print("Local costmap cleared.")
 
-    # ---------------------------------------------
+    def clear_both(self):
+        try:
+            self.nav.clearCostmap()
+        except Exception:
+            try: self.nav.clearLocalCostmap()
+            except Exception: pass
+            try: self.nav.clearGlobalCostmap()
+            except Exception: pass
+        print("Both costmaps cleared.")
 
-    def run(self):
-        now = self.nav.get_clock().now().to_msg()
-        init = make_pose(0.0, 0.0, 0.0, stamp=now)
-        self.nav.setInitialPose(init)
+    # ---------- Keyboard ----------
+    @staticmethod
+    def _getch_nonblocking() -> Optional[str]:
+        dr, _, _ = select.select([sys.stdin], [], [], 0)
+        if dr:
+            return sys.stdin.read(1)
+        return None
 
-        # Define route
-        self.waypoints = [
-            make_pose(5.0, 0.0,   0.0,  stamp=now),
-            make_pose(15.0, 1.0,  90.0,  stamp=now),
-            make_pose(0.0, 5.0, 180.0,  stamp=now),p
-            make_pose(0.0, 0.0, -90.0,  stamp=now),
-        ]
-
-        self.idx = 0
-        while self.idx < len(self.waypoints) and not self.quit_requested:
-            pose = self.waypoints[self.idx]
-            print(f"Going to waypoint {self.idx+1}/{len(self.waypoints)}")
-            self.nav.goToPose(pose)
-
-            while not self.nav.isTaskComplete():
-                fb = self.nav.getFeedback()
-                # if fb and getattr(fb, "distance_remaining", None) is not None:
-                    # print(f"Remaining: {fb.distance_remaining:.2f} m")
-                rclpy.spin_once(self, timeout_sec=0.1)
-
-                if self.soft_reset_requested:
-                    self.soft_reset_requested = False
-                    print("Soft resetting Nav2…")
-                    self.soft_reset_nav2()
-                    # Re-issue same waypoint after reset
-                    print("Re-issuing current waypoint…")
-                    self.nav.goToPose(pose)
-
-                if self.paused:
-                    print("Paused. Type 'r' to resume.")
-                    while self.paused and not self.quit_requested:
-                        rclpy.spin_once(self, timeout_sec=0.1)
-                    if self.quit_requested:
-                        break
-                    print("Resumed. Re-issuing current waypoint…")
-                    self.nav.goToPose(pose)
-
-                if self.cancel_requested:
-                    self.cancel_requested = False
-                    print("Skipping to next waypoint…")
-                    break  # exit inner loop, advance idx
-
-                if self.quit_requested:
-                    break
-
-            if self.quit_requested:
-                break
-
-            # If we canceled to skip, advance and continue
-            if not self.paused:
+    # ---------- Main loop step ----------
+    def step(self) -> bool:
+        if self.current_goal and not self.paused:
+            if self.nav.isTaskComplete():
                 result = self.nav.getResult()
                 if result == TaskResult.SUCCEEDED:
-                    print("Reached waypoint.")
+                    print(f"Reached waypoint {self.idx+1}.")
                     self.idx += 1
-                elif result == TaskResult.CANCELED:
-                    print("Goal canceled.")
-                    self.idx += 1  # treat as skip
-                else:
-                    print("Goal failed — clearing local costmap and retrying once.")
-                    self.clear_local_costmap()
-                    self.nav.goToPose(pose)
-                    while not self.nav.isTaskComplete():
-                        rclpy.spin_once(self, timeout_sec=0.1)
-                    if self.nav.getResult() != TaskResult.SUCCEEDED:
-                        print("Retry failed. Skipping.")
-                        self.idx += 1
+                    self.retry_used = 0
+                    self.current_goal = None
+                    if self.idx < len(self.waypoints):
+                        self.send_goal(self.waypoints[self.idx])
+                    else:
+                        print("Route complete ✅")
+                        return False
 
-        print("Done. Shutting down.")
+                elif result in (TaskResult.CANCELED, TaskResult.FAILED):
+                    # Distinguish a blockage-timeout cancel from user pause etc.
+                    if self._forced_cancel_for_block and self.retry_used < RETRY_PER_GOAL:
+                        print("Attempting automatic retry after blockage timeout...")
+                        self.clear_local()
+                        self.retry_used += 1
+                        self.send_goal(self.waypoints[self.idx])
+                    else:
+                        if self._forced_cancel_for_block:
+                            print("Retry budget exhausted for this goal. Skipping.")
+                        else:
+                            print("Goal failed/canceled. Skipping.")
+                        self.idx += 1
+                        self.retry_used = 0
+                        self.current_goal = None
+                        if self.idx < len(self.waypoints):
+                            self.send_goal(self.waypoints[self.idx])
+                        else:
+                            print("Route complete (with skips) ⚠️")
+                            return False
+            else:
+                fb = self.nav.getFeedback()
+                if fb and fb.distance_remaining is not None:
+                    # Show live progress line
+                    print(f"Remaining: {fb.distance_remaining:.2f} m", end="\r")
+                    # Update blockage timer (resets every time distance decreases by PROGRESS_EPS_M)
+                    self._update_progress(float(fb.distance_remaining))
+
+        # Keyboard controls
+        ch = self._getch_nonblocking()
+        if ch:
+            if ch == "p":  # pause
+                if self.current_goal and not self.paused:
+                    print("\nPausing current goal...")
+                    self.cancel_current(silent=True)
+                    self.paused = True
+                    print("Paused current goal.")
+                else:
+                    print("\nNothing to pause.")
+            elif ch == "r":  # resume
+                if self.paused and self.current_goal:
+                    print("\nResuming current goal...")
+                    self.paused = False
+                    self.send_goal(self.current_goal)
+                else:
+                    print("\nNothing to resume.")
+            elif ch == "c":  # cancel & skip
+                print("\nCanceling and skipping to next...")
+                self.cancel_current(silent=True)
+                self.paused = False
+                self.retry_used = 0
+                self.current_goal = None
+                self.idx += 1
+                if self.idx < len(self.waypoints):
+                    self.send_goal(self.waypoints[self.idx])
+                else:
+                    print("No more waypoints. Exiting.")
+                    return False
+            elif ch == "x":  # clear local
+                print("\nClearing local costmap...")
+                self.clear_local()
+                if self.current_goal and not self.paused:
+                    self.send_goal(self.current_goal)
+            elif ch == "z":  # soft reset
+                print("\nSoft reset: cancel, clear both, resend current goal...")
+                if self.current_goal:
+                    goal_copy = self.current_goal
+                    self.cancel_current(silent=True)
+                    self.clear_both()
+                    self.paused = False
+                    self.retry_used = 0
+                    self.send_goal(goal_copy)
+                else:
+                    self.clear_both()
+            elif ch == "q":
+                print("\nQuitting...")
+                self.cancel_current(silent=True)
+                return False
+
+        return True
 
 def main():
+    # Put terminal into raw mode
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+
     rclpy.init()
-    node = Commander()
+    node = Commander(
+        waypoints=[
+            make_pose(5.0,  0.0,   0.0),
+            make_pose(15.0, 1.0,   0.0),
+            make_pose(15.0,-1.0, 180.0),
+            make_pose(5.0,  0.0, 180.0),
+        ]
+    )
+
     try:
-        node.run()
+        executor = SingleThreadedExecutor()
+        executor.add_node(node)
+
+        node.wait_for_bt_navigator_active()
+
+        print("\nControls: [p]=pause  [r]=resume  [c]=cancel+skip  [x]=clear local  [z]=soft reset  [q]=quit\n")
+
+        node.set_initial_pose(make_pose(0.0, 0.0, 0.0))
+        if node.waypoints:
+            node.send_goal(node.waypoints[0])
+
+        keep_running = True
+        while rclpy.ok() and keep_running:
+            executor.spin_once(timeout_sec=0.1)
+            keep_running = node.step()
+
     finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         node.destroy_node()
         rclpy.shutdown()
 
