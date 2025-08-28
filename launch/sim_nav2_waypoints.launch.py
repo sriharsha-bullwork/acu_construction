@@ -42,9 +42,11 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Paths to params
+    # Paths to params + BT XMLs
     pkg_share = Path(get_package_share_directory('construction'))
     nav2_params = str(pkg_share / 'config' / 'nav2_params.yaml')
+    bt_to_pose = str(pkg_share / 'config' / 'navigate_to_pose_no_replan.xml')
+    bt_through = str(pkg_share / 'config' / 'navigate_through_poses_no_replan.xml')
 
     # Nav2 core nodes (NO map_server, NO amcl)
     controller_server = Node(
@@ -84,8 +86,12 @@ def generate_launch_description():
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        # IMPORTANT: do NOT override the BT file here; we set both defaults in YAML below
-        parameters=[{'use_sim_time': use_sim_time}, nav2_params]
+        parameters=[  # set absolute BT paths here (YAML can’t expand $(find ...))
+            {'use_sim_time': use_sim_time},
+            {'default_nav_to_pose_bt_xml': bt_to_pose},
+            {'default_nav_through_poses_bt_xml': bt_through},
+            nav2_params
+        ]
     )
 
     waypoint_follower = Node(
