@@ -7,15 +7,16 @@
       <!-- PLAN ONCE -->
       <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
 
-      <!-- FOLLOW + single recovery (NO replanning) -->
-      <RecoveryNode name="recovery_no_replan" number_of_retries="10">
+      <!-- FOLLOW + bounded wait recovery (NO replanning) -->
+      <RecoveryNode name="recovery_wait_upto_60s" number_of_retries="60">
         <!-- Child 1: main task -->
         <RateController hz="10.0">
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
         </RateController>
 
-        <!-- Child 2: recovery action (wait; no spin, no replan) -->
+        <!-- Child 2: wait 1s, retried up to 60 times (~60s total) -->
         <Wait wait_duration="1.0"/>
+        <!-- If your build needs it, use:  <Wait time="1.0"/> -->
       </RecoveryNode>
 
       <GoalReached/>
