@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<root main_tree_to_execute="MainTree">
+<BehaviorTree ID="MainTree">
+<Sequence name="strict_nav_through_poses">
+<ClearEntireCostmap service_name="/global_costmap/clear_entirely_global_costmap"/>
+<ComputePathThroughPoses goal_poses="{goals}" path="{path}" planner_id="GridBased"/>
+<FollowPath path="{path}"/>
+<GoalReached/>
+</Sequence>
+</BehaviorTree>
+</root>
