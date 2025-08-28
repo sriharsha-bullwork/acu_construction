@@ -1,79 +1,135 @@
-amcl: # not used
-ros__parameters:
-use_sim_time: true
-
-
-map_server: # not used
-ros__parameters:
-use_sim_time: true
-
-
 bt_navigator:
-ros__parameters:
-use_sim_time: true
-default_bt_xml_filename: "" # set via launch arg
-enable_stuck_detector: false
-wait_for_service_timeout: 2000
-
+  ros__parameters:
+    use_sim_time: true
+    enable_stuck_detector: false
+    wait_for_service_timeout: 2000
 
 controller_server:
-ros__parameters:
-use_sim_time: true
-controller_frequency: 20.0
-min_x_velocity_threshold: 0.001
-min_theta_velocity_threshold: 0.001
-progress_checker_plugin: "progress_checker"
-goal_checker_plugins: ["general_goal_checker"]
-controller_plugins: ["FollowPath"]
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
 
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins:
+      - "general_goal_checker"
+    controller_plugins:
+      - "FollowPath"
 
-progress_checker:
-plugin: "nav2_controller::SimpleProgressChecker"
-required_movement_radius: 0.00 # disable progress gate (we just wait if blocked)
-movement_time_allowance: 3600.0 # effectively never time out
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.0
+      movement_time_allowance: 3600.0
 
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.03
+      yaw_goal_tolerance: 0.03
+      stateful: false
 
-general_goal_checker:
-plugin: "nav2_controller::SimpleGoalChecker"
-xy_goal_tolerance: 0.03
-yaw_goal_tolerance: 0.03
-stateful: false
-
-
-FollowPath:
-plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-desired_linear_vel: 0.22
-lookahead_dist: 0.40
-min_lookahead_dist: 0.20
-use_velocity_scaled_lookahead_dist: true
-rotate_to_heading_angular_vel: 1.0
-allow_reversing: false
-use_rotate_to_heading: true
-transform_tolerance: 0.2
-use_collision_detection: true # <- stop if obstacle intrudes path
-max_allowed_time_to_collision_up_to_carrot: 1.0
-use_cost_regulated_linear_velocity_scaling: true
-regulated_linear_scaling_min_radius: 0.9
-regulated_linear_scaling_min_speed: 0.05
-use_regulated_turning: true
-
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.22
+      lookahead_dist: 0.40
+      min_lookahead_dist: 0.20
+      use_velocity_scaled_lookahead_dist: true
+      rotate_to_heading_angular_vel: 1.0
+      allow_reversing: false
+      use_rotate_to_heading: true
+      transform_tolerance: 0.2
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_cost_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.05
+      use_regulated_turning: true
 
 planner_server:
-ros__parameters:
-use_sim_time: true
-expected_planner_frequency: 1.0
-planner_plugins: ["GridBased"]
-GridBased:
-plugin: "nav2_navfn_planner/NavfnPlanner"
-tolerance: 0.0
-use_astar: false
-allow_unknown: true # allow planning through unknown (global costmap has no obstacles)
+  ros__parameters:
+    use_sim_time: true
+    expected_planner_frequency: 1.0
+    planner_plugins:
+      - "GridBased"
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.0
+      use_astar: false
+      allow_unknown: true
 
+behavior_server:
+  ros__parameters:
+    use_sim_time: true
 
-# Local costmap used for collision/stop behavior
+smoother_server:
+  ros__parameters:
+    use_sim_time: true
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: true
+
+# Local costmap (for obstacle stop)
 local_costmap:
-local_costmap:
-ros__parameters:
-use_sim_time: true
-update_frequency: 10.0
-use_sim_time: true
+  local_costmap:
+    ros__parameters:
+      use_sim_time: true
+      update_frequency: 10.0
+      publish_frequency: 5.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      width: 6.0
+      height: 6.0
+      resolution: 0.05
+
+      # Use either robot_radius OR footprint. Start with radius to avoid YAML pitfalls.
+      robot_radius: 0.105
+
+      plugins:
+        - "obstacle_layer"
+        - "inflation_layer"
+
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 1.0
+          clearing: true
+          marking: true
+          data_type: LaserScan
+          obstacle_range: 2.5
+          raytrace_range: 3.0
+
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.3
+        cost_scaling_factor: 5.0
+
+# Minimal global costmap (no map server). Rolling window, no obstacle layer.
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: true
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      rolling_window: true
+      track_unknown_space: false
+      width: 50.0
+      height: 50.0
+      resolution: 0.05
+      origin_x: -25.0
+      origin_y: -25.0
+      plugins:
+        - "inflation_layer"
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        inflation_radius: 0.0
+        cost_scaling_factor: 1.0
