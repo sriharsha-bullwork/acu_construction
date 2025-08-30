@@ -43,7 +43,7 @@ def generate_launch_description():
     )
 
     # Paths to params + BT XMLs
-    pkg_share = Path(get_package_share_directory('construction'))
+    pkg_share = Path(get_package_share_directory('acu_construction'))
     nav2_params = str(pkg_share / 'config' / 'nav2_params.yaml')
     bt_to_pose = str(pkg_share / 'config' / 'navigate_to_pose_no_replan.xml')
     bt_through = str(pkg_share / 'config' / 'navigate_through_poses_no_replan.xml')

@@ -41,7 +41,7 @@ def generate_launch_description():
     param_dir = LaunchConfiguration(
             'params_file',
             default=os.path.join(
-                get_package_share_directory('construction'),
+                get_package_share_directory('acu_construction'),
                 'params',
                 'burger.yaml'))
 
