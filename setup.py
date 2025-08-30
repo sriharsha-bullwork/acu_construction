@@ -1,6 +1,6 @@
 from setuptools import setup
 
-package_name = 'construction'
+package_name = 'acu_construction'
 
 setup(
     name=package_name,
@@ -38,9 +38,9 @@ setup(
     entry_points={
         'console_scripts': [
             # Your waypoint runner (if you still have it)
-            'waypoint_runner = construction.waypoint_runner:main',
+            'waypoint_runner = acu_construction.waypoint_runner:main',
             # The interactive commander we built together
-            'waypoint_commander = construction.waypoint_commander:main',
+            'waypoint_commander = acu_construction.waypoint_commander:main',
         ],
     },
 )
