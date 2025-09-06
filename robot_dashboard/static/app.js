@@ -139,7 +139,19 @@ document.addEventListener('DOMContentLoaded', () => {
             } else { statusText = 'Nav2: Awaiting Command'; statusClass = 'badge waiting'; }
         }
         navActiveEl.textContent = statusText; navActiveEl.className = statusClass;
-        poseEl.textContent = `Pose: x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw_deg.toFixed(1)}°`;
+        // Build pose string with XY, heading, and GPS if available
+        const headingText = (() => {
+            const yaw = (typeof pose.yaw_deg === 'number') ? pose.yaw_deg : 0;
+            // Convert map yaw (0=+X/East) to compass heading (0=North)
+            const hdg = (90 - yaw + 360) % 360;
+            const dirs = ['N','NE','E','SE','S','SW','W','NW'];
+            const idx = Math.round(hdg / 45) % 8;
+            return `${dirs[idx]} ${hdg.toFixed(0)}°`;
+        })();
+        const gpsText = (pose.lat != null && pose.lon != null)
+            ? `, lat=${Number(pose.lat).toFixed(6)}, lon=${Number(pose.lon).toFixed(6)}`
+            : '';
+        poseEl.textContent = `Pose: x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw_deg.toFixed(1)}° (${headingText})${gpsText}`;
         btnPause.disabled = !data.is_moving || data.is_paused;
         btnResume.disabled = !data.is_paused;
         btnStartMission.disabled = data.mission_mode === 'active' || localRouteData.waypoints.length === 0;
@@ -162,23 +174,27 @@ document.addEventListener('DOMContentLoaded', () => {
             recordedPointsContainer.innerHTML = '<div class="mono">No points yet.</div>';
             return;
         }
-        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th>Lat</th><th>Lon</th></tr></thead><tbody>';
         recordedPath.forEach((p, i) => {
             const yaw = (typeof p.yaw_deg === 'number') ? p.yaw_deg : (p.yaw ? (p.yaw * 180/Math.PI) : 0);
-            html += `<tr><td>${i}</td><td>${p.x.toFixed(2)}</td><td>${p.y.toFixed(2)}</td><td>${yaw.toFixed(1)}</td></tr>`;
+            const plat = (p.lat != null) ? Number(p.lat).toFixed(6) : '';
+            const plon = (p.lon != null) ? Number(p.lon).toFixed(6) : '';
+            html += `<tr><td>${i}</td><td>${p.x.toFixed(2)}</td><td>${p.y.toFixed(2)}</td><td>${yaw.toFixed(1)}</td><td>${plat}</td><td>${plon}</td></tr>`;
         });
         html += '</tbody></table>';
         recordedPointsContainer.innerHTML = html;
     }
     
     function renderTables() {
-        let wpHtml = '<table><thead><tr><th>Name</th><th>X</th><th>Y</th><th>Yaw</th><th></th></tr></thead><tbody>';
+        let wpHtml = '<table><thead><tr><th>Name</th><th>X</th><th>Y</th><th>Yaw</th><th>Lat</th><th>Lon</th><th></th></tr></thead><tbody>';
         localRouteData.waypoints.forEach((wp, i) => {
             wpHtml += `<tr>
                 <td><input type="text" class="wp-input" data-index="${i}" data-field="name" value="${wp.name || ''}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="x" value="${wp.x.toFixed(2)}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="y" value="${wp.y.toFixed(2)}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="yaw_deg" value="${wp.yaw_deg.toFixed(1)}"></td>
+                <td><input type="text" value="${wp.lat != null ? Number(wp.lat).toFixed(6) : ''}" disabled></td>
+                <td><input type="text" value="${wp.lon != null ? Number(wp.lon).toFixed(6) : ''}" disabled></td>
                 <td><button class="btn-delete-wp" data-index="${i}">X</button></td>
             </tr>`;
         });
@@ -202,7 +218,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnAddWp.onclick = () => {
-        localRouteData.waypoints.push({ id: `wp${Date.now()}`, name: '', x: pose.x, y: pose.y, yaw_deg: pose.yaw_deg });
+        localRouteData.waypoints.push({
+            id: `wp${Date.now()}`,
+            name: '',
+            x: pose.x,
+            y: pose.y,
+            yaw_deg: pose.yaw_deg,
+            lat: pose.lat != null ? pose.lat : undefined,
+            lon: pose.lon != null ? pose.lon : undefined,
+        });
         renderTables();
         // Focus the name field of the newly added waypoint for quick editing
         const lastIndex = localRouteData.waypoints.length - 1;
@@ -322,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderRoutePointsEditor() {
         if (!currentEditRouteKey) return;
         const path = localRouteData.routes[currentEditRouteKey] || [];
-        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th></th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th>Lat</th><th>Lon</th><th></th></tr></thead><tbody>';
         path.forEach((p, i) => {
             const yaw = (typeof p.yaw_deg === 'number') ? p.yaw_deg : (p.yaw ? (p.yaw * 180/Math.PI) : 0);
             html += `<tr>
@@ -330,6 +354,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${Number(p.x).toFixed(2)}</td>
                 <td>${Number(p.y).toFixed(2)}</td>
                 <td>${Number(yaw).toFixed(1)}</td>
+                <td>${p.lat != null ? Number(p.lat).toFixed(6) : ''}</td>
+                <td>${p.lon != null ? Number(p.lon).toFixed(6) : ''}</td>
                 <td><button class="btn-del-pt" data-index="${i}">Delete</button></td>
             </tr>`;
         });

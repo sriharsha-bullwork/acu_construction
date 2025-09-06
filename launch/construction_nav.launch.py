@@ -19,6 +19,7 @@ def generate_launch_description():
     # Provide a safe identity map->odom TF so Nav2 can start even if the
     # simulator delays or omits publishing it. Set to false to rely on sim.
     use_static_map_to_odom_arg = DeclareLaunchArgument('use_static_map_to_odom', default_value='false')
+    # Always run map_server by default for visualization and compatibility
 
     pkg_this = Path(get_package_share_directory('acu_construction'))
 
@@ -106,6 +107,7 @@ def generate_launch_description():
         condition=IfCondition(use_static_map_to_odom)
     )
     ld.add_action(static_map_to_odom_cond)
+    # Start map_server and its lifecycle manager
     ld.add_action(map_server)
     ld.add_action(controller_server)
     ld.add_action(planner_server)
