@@ -15,6 +15,7 @@ setup(
         ('share/' + package_name + '/launch', [
             'launch/nav2_tb3.launch.py',
             'launch/sim_nav2_waypoints.launch.py',
+             'launch/sim_nav2_gps.launch.py',
         ]),
 
         # Extra params (keep your existing burger.yaml)
@@ -27,6 +28,13 @@ setup(
             'config/nav2_params.yaml',
             'config/navigate_to_pose_no_replan.xml',
             'config/navigate_through_poses_no_replan.xml',
+            'config/robot_localization.yaml',
+            'config/tb3_nav2_gps.rviz',
+        ]),
+
+        # Models (GPS-enabled TB3 SDF)
+        ('share/' + package_name + '/models/turtlebot3_burger_gps', [
+            'models/turtlebot3_burger_gps/model.sdf',
         ]),
     ],
     install_requires=['setuptools'],

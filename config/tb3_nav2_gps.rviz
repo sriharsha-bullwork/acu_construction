@@ -1,0 +1,36 @@
+Panels:
+  - Class: rviz_common/Displays
+  - Class: rviz_common/Tool Properties
+Visualization Manager:
+  Global Options:
+    Fixed Frame: map
+  Displays:
+    - Name: TF
+      Class: rviz_default_plugins/TF
+    - Name: RobotModel
+      Class: rviz_default_plugins/RobotModel
+    - Name: LaserScan
+      Class: rviz_default_plugins/LaserScan
+      Topic: /scan
+    - Name: GlobalCostmap
+      Class: rviz_default_plugins/Map
+      Topic: /global_costmap/costmap
+    - Name: LocalCostmap
+      Class: rviz_default_plugins/Map
+      Topic: /local_costmap/costmap
+    - Name: OdomLocal
+      Class: rviz_default_plugins/Odometry
+      Topic: /odometry/local
+    - Name: OdomGlobal
+      Class: rviz_default_plugins/Odometry
+      Topic: /odometry/global
+    - Name: OdomGPS
+      Class: rviz_default_plugins/Odometry
+      Topic: /odometry/gps
+    - Name: GlobalPlan
+      Class: rviz_default_plugins/Path
+      Topic: /plan
+Tools:
+  - Class: nav2_rviz_plugins/GoalTool
+  - Class: nav2_rviz_plugins/InitialPoseTool
+
