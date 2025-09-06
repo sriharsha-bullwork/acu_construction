@@ -19,6 +19,7 @@ from rcl_interfaces.msg import Log
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
 from sensor_msgs.msg import NavSatFix, Imu
 from robot_localization.srv import FromLL, ToLL
+from geographic_msgs.msg import GeoPoint
 
 
 def clamp_angle_deg(a: float) -> float:
@@ -95,15 +96,9 @@ class GPSNavCommander(Node):
         self._last_goal_type = None  # 'nav_to_pose' | 'follow_path' | 'through_poses'
 
         # Services: precise LL <-> map conversions from navsat_transform
-        # Try multiple canonical names; pick whichever becomes available.
-        self._fromll_candidates = [
-            self.create_client(FromLL, '/fromLL'),
-            self.create_client(FromLL, '/navsat_transform/fromLL'),
-        ]
-        self._toll_candidates = [
-            self.create_client(ToLL, '/toLL'),
-            self.create_client(ToLL, '/navsat_transform/toLL'),
-        ]
+        # As exposed by ros2 node info: /fromLL and /toLL
+        self._fromll_candidates = [self.create_client(FromLL, '/fromLL')]
+        self._toll_candidates = [self.create_client(ToLL, '/toLL')]
         self._fromll_client = None
         self._toll_client = None
         self.geo_ready = False
@@ -175,9 +170,8 @@ class GPSNavCommander(Node):
             if self._fromll_client is None:
                 return None
             req = FromLL.Request()
-            req.ll_point.latitude = float(lat)
-            req.ll_point.longitude = float(lon)
-            req.ll_point.altitude = float(alt)
+            # Per robot_localization/FromLL: request.ll_point is geographic_msgs/GeoPoint
+            req.ll_point = GeoPoint(latitude=float(lat), longitude=float(lon), altitude=float(alt))
             fut = self._fromll_client.call_async(req)
             t0 = time.time()
             while not fut.done() and time.time() - t0 < timeout:
@@ -215,6 +209,19 @@ class GPSNavCommander(Node):
             return out[0], out[1]
         return None
 
+    def ll_to_xy_ui(self, lat: float, lon: float, alt: float = 0.0):
+        """UI-friendly lat/lon -> XY conversion.
+
+        Tries accurate conversion via fromLL; if unavailable, falls back to an
+        approximate local tangent plane using the first GPS fix as origin. This
+        keeps the dashboard marker responsive even before geo services are ready.
+        """
+        out = self.ll_to_xy(lat, lon, alt)
+        if out is not None:
+            return out
+        # Fallback: approximate conversion for UI only
+        return self._gps_to_xy_approx(lat, lon)
+
     def xy_to_ll(self, x: float, y: float, z: float = 0.0):
         """Accurate map XY -> lat/lon conversion. Requires toLL service.
         Returns (lat, lon) or None if unavailable.
@@ -230,8 +237,9 @@ class GPSNavCommander(Node):
             return
         self._ensure_origin(msg.latitude, msg.longitude)
         # Compute XY using navsat_transform service if available; do not block in callback
-        # Update pose immediately with last known XY; then update asynchronously when service returns
-        x_y = self.ll_to_xy(msg.latitude, msg.longitude)
+        # Update pose immediately using accurate or approximate XY for UI responsiveness.
+        # Then update asynchronously when precise service returns.
+        x_y_ui = self.ll_to_xy_ui(msg.latitude, msg.longitude)
         # Preserve yaw from IMU callback; ensure keys exist
         yaw = float(self.pose.get('yaw', 0.0))
         yaw_deg = clamp_angle_deg(math.degrees(yaw))
@@ -241,8 +249,8 @@ class GPSNavCommander(Node):
         p['lon'] = float(msg.longitude)
         p['yaw'] = yaw
         p['yaw_deg'] = yaw_deg
-        if x_y is not None:
-            p['x'], p['y'] = x_y
+        if x_y_ui is not None:
+            p['x'], p['y'] = x_y_ui
         self.pose = p
         # Async refine XY with precise service if the previous call fell back to approx
         def _refine_xy_cb(fut):
@@ -258,9 +266,7 @@ class GPSNavCommander(Node):
                 pass
         if self._fromll_client is not None and self._fromll_client.service_is_ready():
             req = FromLL.Request()
-            req.ll_point.latitude = float(msg.latitude)
-            req.ll_point.longitude = float(msg.longitude)
-            req.ll_point.altitude = 0.0
+            req.ll_point = GeoPoint(latitude=float(msg.latitude), longitude=float(msg.longitude), altitude=0.0)
             fut = self._fromll_client.call_async(req)
             fut.add_done_callback(_refine_xy_cb)
         # Recording in GPS and mirroring to XY for UI
@@ -268,7 +274,12 @@ class GPSNavCommander(Node):
             last = self._recorded_path_gps[-1] if self._recorded_path_gps else None
             if not last or self._gps_distance_m(last['lat'], last['lon'], msg.latitude, msg.longitude) > float(self.route_data.get('settings', {}).get('recordDensity', 0.1)):
                 self._recorded_path_gps.append({'lat': float(msg.latitude), 'lon': float(msg.longitude), 'yaw_deg': yaw_deg})
-                self.recorded_path.append({'x': x, 'y': y, 'lat': float(msg.latitude), 'lon': float(msg.longitude), 'yaw_deg': yaw_deg})
+                # Use UI-friendly XY so the path is visible immediately
+                if x_y_ui is not None:
+                    rx, ry = x_y_ui
+                else:
+                    rx, ry = 0.0, 0.0
+                self.recorded_path.append({'x': rx, 'y': ry, 'lat': float(msg.latitude), 'lon': float(msg.longitude), 'yaw_deg': yaw_deg})
 
     def _imu_cb(self, msg: Imu):
         o = msg.orientation
@@ -936,7 +947,7 @@ def main():
     threading.Thread(target=ros_spin, daemon=True).start()
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-    print("Serving GPS dashboard on http://0.0.0.0:8090")
+    print("Serving GPS dashboard on http://0.0.0.0:8091")
     app.run(host='0.0.0.0', port=8091, debug=False, threaded=True)
 
 
