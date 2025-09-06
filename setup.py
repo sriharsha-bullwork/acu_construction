@@ -13,6 +13,7 @@ setup(
 
         # Launch files
         ('share/' + package_name + '/launch', [
+            'launch/construction_nav.launch.py',
             'launch/nav2_tb3.launch.py',
             'launch/sim_nav2_waypoints.launch.py',
              'launch/sim_nav2_gps.launch.py',
@@ -36,6 +37,7 @@ setup(
         # Vamana-specific Nav2 + RL config
         ('share/' + package_name + '/vamana_sim', [
             'vamana_sim/vamana_nav2_params.yaml',
+            'vamana_sim/simple_nav2_params.yaml',
             'vamana_sim/vamana_robot_localization.yaml',
             'vamana_sim/vamana_navigate_to_pose_no_replan.xml',
             'vamana_sim/vamana_navigate_through_poses_no_replan.xml',
@@ -44,6 +46,12 @@ setup(
         # Models (GPS-enabled TB3 SDF)
         ('share/' + package_name + '/models/turtlebot3_burger_gps', [
             'models/turtlebot3_burger_gps/model.sdf',
+        ]),
+
+        # Static maps used by map_server
+        ('share/' + package_name + '/maps', [
+            'maps/empty_world.yaml',
+            'maps/empty_world.pgm',
         ]),
     ],
     install_requires=['setuptools'],

@@ -4,28 +4,21 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_footprint
     odom_topic: /odom
-    enable_stuck_detector: true
     wait_for_service_timeout: 2000
-
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_compute_path_through_poses_action_bt_node
       - nav2_follow_path_action_bt_node
       - nav2_goal_reached_condition_bt_node
-      - nav2_clear_costmap_service_bt_node
-      - nav2_spin_action_bt_node
-      - nav2_wait_action_bt_node
       - nav2_rate_controller_bt_node
       - nav2_recovery_node_bt_node
-      - nav2_round_robin_node_bt_node
       - nav2_pipeline_sequence_bt_node
+      - nav2_wait_action_bt_node
 
 controller_server:
   ros__parameters:
     use_sim_time: true
     controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
-    min_theta_velocity_threshold: 0.001
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -37,8 +30,8 @@ controller_server:
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.03
-      yaw_goal_tolerance: 0.03
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.05
       stateful: false
 
     FollowPath:
@@ -81,10 +74,6 @@ waypoint_follower:
   ros__parameters:
     use_sim_time: true
 
-velocity_smoother:
-  ros__parameters:
-    use_sim_time: true
-
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -98,7 +87,7 @@ local_costmap:
       width: 6
       height: 6
       resolution: 0.05
-      robot_radius: 0.105
+      robot_radius: 0.30
       footprint_clearing_enabled: true
       always_send_full_costmap: true
       plugins: [obstacle_layer, inflation_layer]
@@ -117,7 +106,7 @@ local_costmap:
           observation_persistence: 0.0
           expected_update_rate: 0.0
           min_obstacle_height: 0.0
-          max_obstacle_height: 1.0
+          max_obstacle_height: 2.0
           inf_is_valid: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -133,18 +122,26 @@ global_costmap:
       transform_tolerance: 0.3
       global_frame: map
       robot_base_frame: base_footprint
-      # Use a rolling window so the costmap follows the robot
       rolling_window: true
-      track_unknown_space: false
-      # Large-ish window to cover navigation goals without static map constraints
-      width: 100.0
-      height: 100.0
-      resolution: 0.10
-      origin_x: 0.0
-      origin_y: 0.0
-      # No static layer to avoid resizing to a small offline map
-      plugins: ["inflation_layer"]
+      track_unknown_space: true
+      width: 100
+      height: 100
+      resolution: 0.1
+      plugins: ["obstacle_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          data_type: LaserScan
+          clearing: True
+          marking: True
+          obstacle_range: 12.0
+          raytrace_range: 16.0
+          inf_is_valid: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.2
-        cost_scaling_factor: 1.0
+        inflation_radius: 0.5
+        cost_scaling_factor: 2.0
+

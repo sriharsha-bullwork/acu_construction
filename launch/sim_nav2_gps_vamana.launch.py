@@ -49,6 +49,7 @@ def generate_launch_description():
     navsat = Node(
         package='robot_localization', executable='navsat_transform_node', name='navsat_transform', output='screen',
         parameters=[rl_params, {'use_sim_time': use_sim_time}],
+        arguments=['--ros-args', '--log-level', 'navsat_transform:=warn'],
         remappings=[
             ('odometry/filtered', 'odometry/local'),
             ('odometry', 'odometry/gps'),
@@ -70,9 +71,13 @@ def generate_launch_description():
     # Gazebo laser plugin publishes LaserScan with frame_id "laser_frame"
     # but the robot URDF defines the TF link as "lidar_link". Provide a
     # zero transform so costmaps can transform /scan into odom/map frames.
+    # Apply a 90-degree yaw rotation between lidar_link and laser_frame so that
+    # the laser's +X axis points forward in the robot frame. Use quaternion form
+    # to avoid ambiguity in RPY argument ordering: qz=sin(yaw/2), qw=cos(yaw/2).
     static_laser_tf = Node(
         package='tf2_ros', executable='static_transform_publisher', name='static_lidar_to_laser_frame',
-        arguments=['0', '0', '0', '0', '0', '0', 'lidar_link', 'laser_frame'], output='screen'
+        arguments=['0', '0', '0', '0', '0', '1.0', '0.0', 'lidar_link', 'laser_frame'],
+        output='screen'
     )
 
     # Nav2 core nodes using Vamana-specific params and BTs
@@ -80,9 +85,17 @@ def generate_launch_description():
     bt_to_pose = str(pkg_this / 'vamana_sim' / 'vamana_navigate_to_pose_no_replan.xml')
     bt_through = str(pkg_this / 'vamana_sim' / 'vamana_navigate_through_poses_no_replan.xml')
 
+    # Static map server for RViz and global costmap static layer
+    map_yaml = str(pkg_this / 'maps' / 'empty_world.yaml')
+    map_server = Node(
+        package='nav2_map_server', executable='map_server', name='map_server', output='screen',
+        parameters=[{'use_sim_time': use_sim_time}, {'yaml_filename': map_yaml}]
+    )
+
     controller_server = Node(
         package='nav2_controller', executable='controller_server', name='controller_server',
-        output='screen', parameters=[nav2_params]
+        output='screen', parameters=[nav2_params],
+        remappings=[('cmd_vel', 'cmd_vel_out')]
     )
     planner_server = Node(
         package='nav2_planner', executable='planner_server', name='planner_server',
@@ -107,7 +120,14 @@ def generate_launch_description():
         package='nav2_waypoint_follower', executable='waypoint_follower', name='waypoint_follower',
         output='screen', parameters=[nav2_params]
     )
-    lifecycle_manager = Node(
+    # Manage map server separately to prevent it from blocking navigation bringup
+    lifecycle_manager_localization = Node(
+        package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_localization',
+        output='screen', parameters=[{'use_sim_time': True}, {'autostart': True}, {'bond_timeout': 0.0},
+                                     {'node_names': ['map_server']}]
+    )
+
+    lifecycle_manager_navigation = Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_navigation',
         output='screen', parameters=[{'use_sim_time': True}, {'autostart': True}, {'bond_timeout': 0.0},
                                      {'node_names': ['controller_server', 'planner_server', 'smoother_server',
@@ -131,6 +151,7 @@ def generate_launch_description():
         ekf_map_with_tf,
         ekf_map_no_tf,
         static_map_to_odom,
+        map_server,
         static_laser_tf,
         controller_server,
         planner_server,
@@ -138,6 +159,7 @@ def generate_launch_description():
         smoother_server,
         bt_navigator,
         waypoint_follower,
-        lifecycle_manager,
+        lifecycle_manager_localization,
+        lifecycle_manager_navigation,
         rviz2,
     ])
