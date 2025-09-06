@@ -5,7 +5,7 @@ ekf_filter_node_odom:
     publish_tf: true
     map_frame: map
     odom_frame: odom
-    base_link_frame: base_footprint
+    base_link_frame: base_link
     world_frame: odom
 
     # Inputs: wheel odom and IMU from Gazebo
@@ -18,29 +18,6 @@ ekf_filter_node_odom:
     odom0_differential: false
     odom0_queue_size: 5
 
-    imu0: imu
-    imu0_config: [false, false, false,
-                  true,  true,  true,
-                  false, false, false,
-                  true,  true,  true,
-                  false, false, false]
-    imu0_differential: false
-    imu0_remove_gravitational_acceleration: true
-
-    # Process / measurement noise (tuned lightly for sim)
-    process_noise_covariance: [0.05, 0.0,  0.0,  0.0,  0.0,  0.0,
-                               0.0,  0.05, 0.0,  0.0,  0.0,  0.0,
-                               0.0,  0.0,  1e6, 0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.05, 0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.05, 0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.1]
-    initial_estimate_covariance: [1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  1e9,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9]
-
 ekf_filter_node_map:
   ros__parameters:
     frequency: 30.0
@@ -48,7 +25,7 @@ ekf_filter_node_map:
     publish_tf: true
     map_frame: map
     odom_frame: odom
-    base_link_frame: base_footprint
+    base_link_frame: base_link
     world_frame: map
 
     # Fuse the local EKF and GPS odometry from navsat_transform
@@ -70,18 +47,6 @@ ekf_filter_node_map:
     odom1_differential: false
     odom1_queue_size: 5
 
-    process_noise_covariance: [0.1,  0.0,  0.0,  0.0,  0.0,  0.0,
-                               0.0,  0.1,  0.0,  0.0,  0.0,  0.0,
-                               0.0,  0.0,  1e9,  0.0,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.2,  0.0,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.2,  0.0,
-                               0.0,  0.0,  0.0,  0.0,  0.0,  0.3]
-    initial_estimate_covariance: [1e-9, 0.0,  0.0,  0.0,  0.0,  0.0,
-                                  0.0,  1e-9, 0.0,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  1e9,  0.0,  0.0,  0.0,
-                                  0.0,  0.0,  0.0,  1e-9, 0.0,  0.0,
-                                  0.0,  0.0,  0.0,  0.0,  1e-9, 0.0,
-                                  0.0,  0.0,  0.0,  0.0,  0.0,  1e-9]
 
 navsat_transform:
   ros__parameters:
@@ -89,6 +54,7 @@ navsat_transform:
     two_d_mode: true
     publish_filtered_gps: true
     use_odometry: true
+    use_odometry_yaw: true
     zero_altitude: true
     # Adjust if needed for your location / world
     magnetic_declination_radians: 0.0

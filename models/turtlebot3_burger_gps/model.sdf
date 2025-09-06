@@ -445,7 +445,7 @@
 
       <odometry_topic>odom</odometry_topic>
       <odometry_frame>odom</odometry_frame>
-      <robot_base_frame>base_footprint</robot_base_frame>
+      <robot_base_frame>base_link</robot_base_frame>
 
     </plugin>
 
@@ -460,4 +460,3 @@
     </plugin>      
   </model>
 </sdf>
-
