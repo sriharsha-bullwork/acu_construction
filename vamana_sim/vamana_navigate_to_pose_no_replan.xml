@@ -1,19 +1,14 @@
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateToPose">
-      <RateController hz="10.0">
-        <Sequence>
-          <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      <RecoveryNode name="recovery_wait_upto_60s" number_of_retries="60">
+        <RateController hz="10.0">
           <FollowPath path="{path}" controller_id="FollowPath"/>
-        </Sequence>
-      </RateController>
-      <RecoveryNode number_of_retries="1" retry_delay="1">
-        <Sequence>
-          <ClearEntireCostmap service_name="/global_costmap/clear_entirely_global_costmap"/>
-          <Wait duration="1"/>
-        </Sequence>
+        </RateController>
+        <Wait wait_duration="1.0"/>
       </RecoveryNode>
+      <GoalReached/>
     </PipelineSequence>
   </BehaviorTree>
 </root>
-
