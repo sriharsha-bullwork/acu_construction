@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+
+    <PipelineSequence name="navigate_through_poses_no_replan">
+
+      <!-- PLAN ONCE for all waypoints -->
+      <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+
+      <!-- FOLLOW + bounded wait recovery (NO replanning) -->
+      <RecoveryNode name="recovery_wait_upto_60s" number_of_retries="60">
+        <!-- Child 1: main task -->
+        <RateController hz="10.0">
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+        </RateController>
+
+        <!-- Child 2: wait 1s, retried up to 60 times (~60s total) -->
+        <Wait wait_duration="1.0"/>
+        <!-- If your build needs it, use:  <Wait time="1.0"/> -->
+      </RecoveryNode>
+
+      <GoalReached/>
+
+    </PipelineSequence>
+
+  </BehaviorTree>
+</root>

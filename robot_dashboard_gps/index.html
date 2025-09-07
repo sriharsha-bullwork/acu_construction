@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Robot Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="/static/styles.css" rel="stylesheet" />
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>Robot Dashboard</h1>
+            <div id="status">
+                <span id="nav-active" class="badge">Connecting...</span>
+                <span id="pose" class="mono">pose: --</span>
+            </div>
+        </div>
+        <div class="header-right buttons">
+            <button id="btn-start-mission" disabled>Start Mission</button>
+            <button id="btn-stop-mission" class="hidden">Stop Mission</button>
+            <button id="btn-pause" disabled>Pause</button>
+            <button id="btn-resume" disabled>Resume</button>
+        </div>
+    </header>
+
+    <main>
+        <section class="left">
+            <div class="canvas-wrap">
+                <canvas id="map" width="900" height="600"></canvas>
+                <div id="joystick-container"></div>
+            </div>
+        </section>
+
+        <section class="right">
+            <!-- Edit/Recording UI -->
+            <div id="edit-mode-panel">
+                <h2>Waypoints</h2>
+                <div id="wp-table-container"></div>
+                <div class="buttons"><button id="btn-add-wp">Add Waypoint at Current Pose</button></div>
+                
+                <h2>Routes</h2>
+                <div id="route-table-container"></div>
+                <div class="buttons"><button id="btn-add-route">Add New Route</button></div>
+
+                <div id="recording-controls" class="hidden">
+                    <h3>Record Route</h3>
+                    <div class="settings-grid">
+                        <label for="record-from">From</label>
+                        <select id="record-from"></select>
+                        <label for="record-to">To</label>
+                        <select id="record-to"></select>
+                    </div>
+                    <div class="buttons">
+                        <button id="btn-start-recording">Start Recording</button>
+                        <button id="btn-finish-recording" disabled>Finish Recording</button>
+                    </div>
+                    <h4>Recorded Points</h4>
+                    <div id="recorded-points-container"></div>
+                </div>
+
+                <div id="route-editor" class="hidden">
+                    <h3>Route Editor</h3>
+                    <div id="route-editor-header" class="mono"></div>
+                    <div id="route-points-container"></div>
+                    <div class="buttons">
+                        <button id="btn-save-route">Save Route</button>
+                    </div>
+                </div>
+
+                <h2>Storage</h2>
+                <div class="buttons">
+                    <button id="btn-export">Export Routes (JSON)</button>
+                    <label class="file-input">
+                        <input type="file" id="file-import" accept="application/json" style="display:none" />
+                        <span id="btn-import" class="button-like">Import Routes (JSON)</span>
+                    </label>
+                </div>
+
+                <h2>Settings</h2>
+                <div class="settings-grid">
+                    <label for="setting-proximity">Proximity Tolerance (m)</label>
+                    <input type="number" id="setting-proximity" step="0.05" value="0.2">
+                    <label for="setting-density">Recording Density (m)</label>
+                    <input type="number" id="setting-density" step="0.01" value="0.1">
+                </div>
+            </div>
+
+            <!-- Mission Mode UI -->
+            <div id="mission-mode-panel" class="hidden">
+                <h2>On-Demand Navigation</h2>
+                <div id="on-demand-buttons" class="buttons"></div>
+            </div>
+            
+            <h2>Console</h2>
+            <div id="console" class="console-box"></div>
+        </section>
+    </main>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

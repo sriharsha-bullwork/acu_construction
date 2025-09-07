@@ -53,6 +53,17 @@ setup(
             'vamana_basic_nav/config/vamana_basic_nav_navigate_through_poses_no_replan.xml',
         ]),
 
+        # Vamana Basic Navsat (new folder)
+        ('share/' + package_name + '/vamana_basic_navsat/launch', [
+            'vamana_basic_navsat/launch/vamana_sim_navsat.launch.py',
+        ]),
+        ('share/' + package_name + '/vamana_basic_navsat/config', [
+            'vamana_basic_navsat/config/vamana_basic_nav_nav2_params.yaml',
+            'vamana_basic_navsat/config/vamana_dual_ekf.yaml',
+            'vamana_basic_navsat/config/vamana_basic_nav_navigate_to_pose_no_replan.xml',
+            'vamana_basic_navsat/config/vamana_basic_nav_navigate_through_poses_no_replan.xml',
+        ]),
+        
         # Models (GPS-enabled TB3 SDF)
         ('share/' + package_name + '/models/turtlebot3_burger_gps', [
             'models/turtlebot3_burger_gps/model.sdf',
