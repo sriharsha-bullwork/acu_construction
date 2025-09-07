@@ -30,14 +30,14 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.0
+      required_movement_radius: 0.05
       movement_time_allowance: 3600.0
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.03
-      yaw_goal_tolerance: 0.03
-      stateful: false
+      xy_goal_tolerance: 0.5
+      yaw_goal_tolerance: 0.6
+      stateful: true
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
@@ -47,7 +47,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       rotate_to_heading_angular_vel: 1.0
       allow_reversing: false
-      use_rotate_to_heading: true
+      use_rotate_to_heading: false
       transform_tolerance: 0.2
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
@@ -81,12 +81,23 @@ waypoint_follower:
 
 velocity_smoother:
   ros__parameters:
-    use_sim_time: true
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.26, 0.0, 1.0]
+    min_velocity: [-0.26, 0.0, -1.0]
+    max_accel: [2.5, 0.0, 3.2]
+    max_decel: [-2.5, 0.0, -3.2]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
 
 # Local costmap
 local_costmap:
   local_costmap:
     ros__parameters:
+      transform_tolerance: 0.3  # default is ~0.2; a touch more helps
       use_sim_time: true
       update_frequency: 10.0
       publish_frequency: 5.0
@@ -126,6 +137,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      transform_tolerance: 0.3  # default is ~0.2; a touch more helps
       use_sim_time: true
       update_frequency: 1.0
       publish_frequency: 1.0
