@@ -18,7 +18,7 @@ from nav_msgs.msg import Path
 from rcl_interfaces.msg import Log
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
 from sensor_msgs.msg import NavSatFix, Imu
-from robot_localization.srv import FromLL, ToLL
+from robot_localization.srv import FromLL, ToLL, SetDatum
 from geographic_msgs.msg import GeoPoint
 
 
@@ -101,9 +101,11 @@ class GPSNavCommander(Node):
         self._toll_candidates = [self.create_client(ToLL, '/toLL')]
         self._fromll_client = None
         self._toll_client = None
+        self._datum_client = self.create_client(SetDatum, '/datum')
         self.geo_ready = False
         self._geo_logged_ready = False
         self.create_timer(1.0, self._probe_geo_services)
+        self.datum_set = False
 
         # Subscriptions: GPS + IMU, Nav2 plan, rosout
         self.create_subscription(NavSatFix, '/gps/fix', self._gps_cb, qos_profile_sensor_data)
@@ -236,6 +238,26 @@ class GPSNavCommander(Node):
         if math.isnan(msg.latitude) or math.isnan(msg.longitude):
             return
         self._ensure_origin(msg.latitude, msg.longitude)
+        # If datum not set yet and service is ready, set it to first fix
+        if not self.datum_set and self._datum_client is not None and self._datum_client.service_is_ready():
+            try:
+                req = SetDatum.Request()
+                # prefer provided lat/lon/altitude
+                alt = float(msg.altitude) if not math.isnan(msg.altitude) else 0.0
+                if hasattr(req, 'use_input'):
+                    req.use_input = False
+                # Try common field names across RL versions
+                if hasattr(req, 'geo_pose'):
+                    req.geo_pose = GeoPoint(latitude=float(msg.latitude), longitude=float(msg.longitude), altitude=alt)
+                elif hasattr(req, 'datum'):
+                    req.datum = GeoPoint(latitude=float(msg.latitude), longitude=float(msg.longitude), altitude=alt)
+                fut = self._datum_client.call_async(req)
+                def _datum_cb(_):
+                    self.datum_set = True
+                    self.log_message(f"Datum set to lat={msg.latitude:.8f}, lon={msg.longitude:.8f}, alt={alt:.2f}")
+                fut.add_done_callback(_datum_cb)
+            except Exception as e:
+                self.log_message(f"SetDatum call failed: {e}")
         # Compute XY using navsat_transform service if available; do not block in callback
         # Update pose immediately using accurate or approximate XY for UI responsiveness.
         # Then update asynchronously when precise service returns.
@@ -916,6 +938,17 @@ def teleop():
     data = request.get_json(force=True)
     node.publish_cmd_vel(float(data.get('linear', {}).get('x', 0.0)), float(data.get('angular', {}).get('z', 0.0)))
     return jsonify({'ok': True})
+
+
+# Debug: test toLL conversion at XY (0.0, 0.0)
+@app.route('/api/test_toLL', methods=['GET'])
+def test_toLL():
+    ll = node.xy_to_ll(0.0, 0.0)
+    if ll is None:
+        return jsonify({'ok': False, 'error': 'toLL service not ready'}), 503
+    lat, lon = ll
+    node.log_message(f"test_toLL (0,0) -> lat={lat:.8f}, lon={lon:.8f}")
+    return jsonify({'ok': True, 'lat': lat, 'lon': lon})
 
 
 # Optional export/import routes for convenience (kept XY format for UI)

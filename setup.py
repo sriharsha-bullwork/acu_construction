@@ -43,6 +43,16 @@ setup(
             'vamana_sim/vamana_navigate_through_poses_no_replan.xml',
         ]),
 
+        # Vamana Basic Nav (new folder)
+        ('share/' + package_name + '/vamana_basic_nav/launch', [
+            'vamana_basic_nav/launch/vamana_sim_basic_nav.launch.py',
+        ]),
+        ('share/' + package_name + '/vamana_basic_nav/config', [
+            'vamana_basic_nav/config/vamana_basic_nav_nav2_params.yaml',
+            'vamana_basic_nav/config/vamana_basic_nav_navigate_to_pose_no_replan.xml',
+            'vamana_basic_nav/config/vamana_basic_nav_navigate_through_poses_no_replan.xml',
+        ]),
+
         # Models (GPS-enabled TB3 SDF)
         ('share/' + package_name + '/models/turtlebot3_burger_gps', [
             'models/turtlebot3_burger_gps/model.sdf',

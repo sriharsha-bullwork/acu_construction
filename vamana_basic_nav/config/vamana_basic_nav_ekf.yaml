@@ -1,0 +1,39 @@
+ekf_odom:
+  ros__parameters:
+    frequency: 50.0
+    two_d_mode: true
+    publish_tf: true
+
+    # Frames
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom              # <- crucial: EKF will publish odom->base_footprint only
+
+    # Inputs
+    odom0: /diff_drive_base_controller/odom
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # Use pose (x,y,yaw) and twist (vx, vy (optional), wz). Typical diff-drive:
+    odom0_config: [
+      true,  true,  false,   # x, y, z
+      false, false, true,    # roll, pitch, yaw
+      true,  false, false,   # vx, vy, vz
+      false, false, true,    # vroll, vpitch, vyaw
+      false, false           # ax, ay
+    ]
+
+    # If you also fuse IMU later:
+    # imu0: /imu
+    # imu0_config: [false, false, false,
+    #               true,  true,  true,
+    #               false, false, false,
+    #               true,  true,  true,
+    #               false, false]
+    # imu0_remove_gravitational_acceleration: true
+
+    # Common sim settings
+    use_sim_time: true
+    print_diagnostics: true
