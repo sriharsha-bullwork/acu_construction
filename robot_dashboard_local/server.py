@@ -46,7 +46,7 @@ class NavCommander(Node):
         self._through_poses_client = ActionClient(self, NavigateThroughPoses, 'navigate_through_poses')
         self._last_goal_type = None  # 'nav_to_pose' | 'follow_path' | 'through_poses'
         
-        self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
+        self.create_subscription(Odometry, '/diff_drive_base_controller/odom', self._odom_cb, qos_profile_sensor_data)
         self.create_subscription(Path, '/plan', self._plan_cb, 10)
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('Dashboard node started and ready.')
@@ -387,5 +387,5 @@ def main():
     global node; rclpy.init(); node = NavCommander(); threading.Thread(target=ros_spin, daemon=True).start()
     log = logging.getLogger('werkzeug'); log.setLevel(logging.ERROR)
     print("Serving dashboard on http://0.0.0.0:8090")
-    app.run(host='0.0.0.0', port=8090, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=8099, debug=False, threaded=True)
 if __name__ == '__main__': main()
