@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let nav2Path = [];
     let recordedPath = [];
     let pose = { x: 0, y: 0, yaw: 0, yaw_deg: 0 };
+    let geo = { lat: null, lon: null, alt: null, heading_deg: null, heading_cardinal: null };
     let isRecording = false;
     let isEditingTables = false;
     let currentEditRouteKey = null;
@@ -74,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateUI(data) {
         pose = data.pose;
+        if (data.geo) geo = data.geo;
         nav2Path = data.nav2_path;
         recordedPath = data.recorded_path;
         isRecording = data.is_recording;
@@ -139,7 +141,10 @@ document.addEventListener('DOMContentLoaded', () => {
             } else { statusText = 'Nav2: Awaiting Command'; statusClass = 'badge waiting'; }
         }
         navActiveEl.textContent = statusText; navActiveEl.className = statusClass;
-        poseEl.textContent = `Pose: x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw_deg.toFixed(1)}°`;
+        const latStr = (typeof geo.lat === 'number') ? geo.lat.toFixed(7) : '--';
+        const lonStr = (typeof geo.lon === 'number') ? geo.lon.toFixed(7) : '--';
+        const hdgStr = (typeof geo.heading_deg === 'number') ? `${geo.heading_cardinal || ''} ${geo.heading_deg.toFixed(1)}°` : '--';
+        poseEl.textContent = `Pose: x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, yaw=${pose.yaw_deg.toFixed(1)}° | lat=${latStr}, lon=${lonStr}, heading=${hdgStr}`;
         btnPause.disabled = !data.is_moving || data.is_paused;
         btnResume.disabled = !data.is_paused;
         btnStartMission.disabled = data.mission_mode === 'active' || localRouteData.waypoints.length === 0;
@@ -162,23 +167,29 @@ document.addEventListener('DOMContentLoaded', () => {
             recordedPointsContainer.innerHTML = '<div class="mono">No points yet.</div>';
             return;
         }
-        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th>Lat</th><th>Lon</th><th>Heading°</th></tr></thead><tbody>';
         recordedPath.forEach((p, i) => {
             const yaw = (typeof p.yaw_deg === 'number') ? p.yaw_deg : (p.yaw ? (p.yaw * 180/Math.PI) : 0);
-            html += `<tr><td>${i}</td><td>${p.x.toFixed(2)}</td><td>${p.y.toFixed(2)}</td><td>${yaw.toFixed(1)}</td></tr>`;
+            const plat = (typeof p.lat === 'number') ? p.lat.toFixed(7) : '';
+            const plon = (typeof p.lon === 'number') ? p.lon.toFixed(7) : '';
+            const phdg = (typeof p.heading_deg === 'number') ? p.heading_deg.toFixed(1) : '';
+            html += `<tr><td>${i}</td><td>${p.x.toFixed(2)}</td><td>${p.y.toFixed(2)}</td><td>${yaw.toFixed(1)}</td><td>${plat}</td><td>${plon}</td><td>${phdg}</td></tr>`;
         });
         html += '</tbody></table>';
         recordedPointsContainer.innerHTML = html;
     }
     
     function renderTables() {
-        let wpHtml = '<table><thead><tr><th>Name</th><th>X</th><th>Y</th><th>Yaw</th><th></th></tr></thead><tbody>';
+        let wpHtml = '<table><thead><tr><th>Name</th><th>X</th><th>Y</th><th>Yaw</th><th>Lat</th><th>Lon</th><th>Heading°</th><th></th></tr></thead><tbody>';
         localRouteData.waypoints.forEach((wp, i) => {
             wpHtml += `<tr>
                 <td><input type="text" class="wp-input" data-index="${i}" data-field="name" value="${wp.name || ''}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="x" value="${wp.x.toFixed(2)}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="y" value="${wp.y.toFixed(2)}"></td>
                 <td><input type="number" class="wp-input" data-index="${i}" data-field="yaw_deg" value="${wp.yaw_deg.toFixed(1)}"></td>
+                <td><input type="number" class="wp-input" step="0.000001" data-index="${i}" data-field="lat" value="${(wp.lat ?? '').toString()}"></td>
+                <td><input type="number" class="wp-input" step="0.000001" data-index="${i}" data-field="lon" value="${(wp.lon ?? '').toString()}"></td>
+                <td><input type="number" class="wp-input" data-index="${i}" data-field="heading_deg" value="${(wp.heading_deg ?? '').toString()}"></td>
                 <td><button class="btn-delete-wp" data-index="${i}">X</button></td>
             </tr>`;
         });
@@ -202,7 +213,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     btnAddWp.onclick = () => {
-        localRouteData.waypoints.push({ id: `wp${Date.now()}`, name: '', x: pose.x, y: pose.y, yaw_deg: pose.yaw_deg });
+        const wp = { id: `wp${Date.now()}`, name: '', x: pose.x, y: pose.y, yaw_deg: pose.yaw_deg };
+        if (typeof geo.lat === 'number' && typeof geo.lon === 'number') {
+            wp.lat = geo.lat; wp.lon = geo.lon; wp.heading_deg = geo.heading_deg;
+        }
+        localRouteData.waypoints.push(wp);
         renderTables();
         // Focus the name field of the newly added waypoint for quick editing
         const lastIndex = localRouteData.waypoints.length - 1;
@@ -322,7 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderRoutePointsEditor() {
         if (!currentEditRouteKey) return;
         const path = localRouteData.routes[currentEditRouteKey] || [];
-        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th></th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>#</th><th>X</th><th>Y</th><th>Yaw°</th><th>Lat</th><th>Lon</th><th>Heading°</th><th></th></tr></thead><tbody>';
         path.forEach((p, i) => {
             const yaw = (typeof p.yaw_deg === 'number') ? p.yaw_deg : (p.yaw ? (p.yaw * 180/Math.PI) : 0);
             html += `<tr>
@@ -330,6 +345,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${Number(p.x).toFixed(2)}</td>
                 <td>${Number(p.y).toFixed(2)}</td>
                 <td>${Number(yaw).toFixed(1)}</td>
+                <td>${(typeof p.lat === 'number') ? p.lat.toFixed(7) : ''}</td>
+                <td>${(typeof p.lon === 'number') ? p.lon.toFixed(7) : ''}</td>
+                <td>${(typeof p.heading_deg === 'number') ? p.heading_deg.toFixed(1) : ''}</td>
                 <td><button class="btn-del-pt" data-index="${i}">Delete</button></td>
             </tr>`;
         });

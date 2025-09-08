@@ -1,0 +1,103 @@
+study the contents of the robot_dashboard_gps folder throughly.
+
+Currently this server_gps.py and the associated other files is controlling a vehicle in ros2 which is running in a simulation in another container.
+
+This is wokring well but it is in local coordinate system. 
+
+here ire the task
+
+1.  Move to wokring in GPS frame from the local frame
+2. the gps values are published in the topic /gps/fix there are also other topics being published as given below
+
+root@e14:/workspaces/Simulation_ACU# ros2 topic list
+/behavior_server/transition_event
+/behavior_tree_log
+/bond
+/bt_navigator/transition_event
+/clicked_point
+/clock
+/cmd_vel
+/controller_server/transition_event
+/diagnostics
+/diff_drive_base_controller/cmd_vel_unstamped
+/diff_drive_base_controller/odom
+/diff_drive_base_controller/transition_event
+/downsampled_costmap
+/downsampled_costmap_updates
+/dynamic_joint_states
+/global_costmap/costmap
+/global_costmap/costmap_raw
+/global_costmap/costmap_updates
+/global_costmap/footprint
+/global_costmap/global_costmap/transition_event
+/global_costmap/published_footprint
+/global_costmap/voxel_marked_cloud
+/goal_pose
+/gps/filtered
+/gps/fix
+/gps_controller/out
+/gps_controller/vel
+/imu
+/imu_plugin/out
+/initialpose
+/joint_state_broadcaster/transition_event
+/joint_states
+/local_costmap/costmap
+/local_costmap/costmap_raw
+/local_costmap/costmap_updates
+/local_costmap/footprint
+/local_costmap/local_costmap/transition_event
+/local_costmap/published_footprint
+/local_costmap/voxel_marked_cloud
+/local_plan
+/lookahead_collision_arc
+/lookahead_point
+/map
+/map_updates
+/mobile_base/sensors/bumper_pointcloud
+/odom
+/odometry/filtered/global
+/odometry/filtered/local
+/odometry/gps
+/parameter_events
+/particle_cloud
+/performance_metrics
+/plan
+/plan_smoothed
+/planner_server/transition_event
+/position_data
+/received_global_plan
+/robot_description
+/rosout
+/scan
+/set_pose
+/smoother_server/transition_event
+/speed_limit
+/stereo_depth_camera/camera_info
+/stereo_depth_camera/depth/camera_info
+/stereo_depth_camera/depth/image_raw
+/stereo_depth_camera/depth/image_raw/compressed
+/stereo_depth_camera/depth/image_raw/compressedDepth
+/stereo_depth_camera/depth/image_raw/theora
+/stereo_depth_camera/image_raw
+/stereo_depth_camera/image_raw/compressed
+/stereo_depth_camera/image_raw/compressedDepth
+/stereo_depth_camera/image_raw/theora
+/stereo_depth_camera/points
+/tf
+/tf_static
+/waypoint_follower/transition_event
+/waypoints
+
+
+3. I am using the dual ekf navsat nodes defined in /workspaces/Simulation_ACU/src/acu_construction/vamana_basic_navsat/config/vamana_dual_ekf.yaml
+
+and the launch file  /workspaces/Simulation_ACU/src/acu_construction/vamana_basic_navsat/launch/vamana_sim_navsat.launch.py
+
+Take the above and see which is the right topic to subsrice to ge tget correct vehicle position in the gps frame and its heading  as well
+
+4. Rest of the activities like storing waypoints and the path sould all be in the gps frame (lat long heading)
+
+5. In the dashboard display the lat log and heading (east west with value) along with the position (x,y )
+
+6. when the mission starts, take the gps values and convert them to the required nav2 goals either by eusing the commander api and using services like fromLL and toLL to move between gps and odom frame of reference

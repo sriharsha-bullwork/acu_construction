@@ -15,10 +15,41 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
+from sensor_msgs.msg import NavSatFix
 from rcl_interfaces.msg import Log
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
+from robot_localization.srv import FromLL, ToLL
 
-class NavCommander(Node):
+class _LLHelpersMixin:
+    def _ll_to_xy_safe(self, lat: float, lon: float):
+        if not _valid_ll(lat, lon):
+            return None
+        if not _safe_cli_wait(self._from_ll_cli, 0.1):
+            return None
+        try:
+            req = FromLL.Request(); req.lat = float(lat); req.lon = float(lon)
+            fut = self._from_ll_cli.call_async(req)
+            if not _wait_future(fut, 2.0):
+                return None
+            resp = fut.result()
+            return (float(resp.map_point.x), float(resp.map_point.y))
+        except Exception:
+            return None
+
+    def _xy_to_ll_safe(self, x: float, y: float):
+        if not _safe_cli_wait(self._to_ll_cli, 0.1):
+            return None
+        try:
+            req = ToLL.Request(); req.map_point.x = float(x); req.map_point.y = float(y); req.map_point.z = 0.0
+            fut = self._to_ll_cli.call_async(req)
+            if not _wait_future(fut, 2.0):
+                return None
+            resp = fut.result()
+            return (float(resp.lat), float(resp.lon))
+        except Exception:
+            return None
+
+class NavCommander(Node, _LLHelpersMixin):
     def __init__(self):
         super().__init__('nav_dashboard_commander')
         self.log_node_filter = ['bt_navigator', 'nav2_controller', 'nav2_planner', 'nav_dashboard_commander']
@@ -28,6 +59,8 @@ class NavCommander(Node):
             GoalStatus.STATUS_CANCELED: 'CANCELED',
         }
         self.pose = {'x': 0.0, 'y': 0.0, 'yaw': 0.0, 'yaw_deg': 0.0}
+        # geo stores GPS-frame data (lat, lon) and compass heading (0=N)
+        self.geo = {'lat': None, 'lon': None, 'alt': None, 'heading_deg': None, 'heading_cardinal': None}
         self.nav2_path = []
         self.log_messages = deque(maxlen=100)
         self.route_data = {'waypoints': [], 'routes': {}, 'settings': {'proximity': 0.2, 'recordDensity': 0.1}}
@@ -45,8 +78,16 @@ class NavCommander(Node):
         self._follow_path_client = ActionClient(self, FollowPath, 'follow_path')
         self._through_poses_client = ActionClient(self, NavigateThroughPoses, 'navigate_through_poses')
         self._last_goal_type = None  # 'nav_to_pose' | 'follow_path' | 'through_poses'
+
+        # Services to convert between GPS (LLA) and local ENU (map/odom)
+        self._from_ll_cli = self.create_client(FromLL, '/fromLL')
+        self._to_ll_cli = self.create_client(ToLL, '/toLL')
         
-        self.create_subscription(Odometry, '/diff_drive_base_controller/odom', self._odom_cb, qos_profile_sensor_data)
+        # Use global fused odometry (map frame) for x/y and yaw
+        self.create_subscription(Odometry, '/odometry/filtered/global', self._odom_cb, qos_profile_sensor_data)
+        # Prefer filtered GPS for stable lat/lon; fallback to raw fix if needed
+        self.create_subscription(NavSatFix, '/gps/filtered', self._gps_cb, qos_profile_sensor_data)
+        self.create_subscription(NavSatFix, '/gps/fix', self._gps_cb_raw, qos_profile_sensor_data)
         self.create_subscription(Path, '/plan', self._plan_cb, 10)
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('Dashboard node started and ready.')
@@ -73,13 +114,38 @@ class NavCommander(Node):
         x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
         o = msg.pose.pose.orientation
         _, _, yaw = euler_from_quaternion([o.x, o.y, o.z, o.w])
-        self.pose = {'x': x, 'y': y, 'yaw': yaw, 'yaw_deg': (math.degrees(yaw) + 360.0) % 360.0}
+        yaw_deg_enu = (math.degrees(yaw) + 360.0) % 360.0
+        self.pose = {'x': x, 'y': y, 'yaw': yaw, 'yaw_deg': yaw_deg_enu}
+        # Compass heading (0=N, 90=E) derived from ENU yaw (0=E, 90=N)
+        heading_deg = (90.0 - yaw_deg_enu + 360.0) % 360.0
+        self.geo['heading_deg'] = heading_deg
+        self.geo['heading_cardinal'] = heading_to_cardinal(heading_deg)
         if self.is_recording:
             last_pt = self.recorded_path[-1] if self.recorded_path else None
             dist_sq = (x - last_pt['x'])**2 + (y - last_pt['y'])**2 if last_pt else 999
             if dist_sq > (self.route_data.get('settings', {}).get('recordDensity', 0.1))**2:
-                # append a copy to avoid mutating past points when pose updates
-                self.recorded_path.append({'x': self.pose['x'], 'y': self.pose['y'], 'yaw_deg': self.pose['yaw_deg']})
+                # append with both ENU and (if available) LLA
+                pt = {'x': float(self.pose['x']), 'y': float(self.pose['y']), 'yaw_deg': float(self.pose['yaw_deg'])}
+                ll = self._xy_to_ll_safe(pt['x'], pt['y'])
+                if ll:
+                    pt['lat'], pt['lon'] = ll
+                    pt['heading_deg'] = self.geo.get('heading_deg')
+                self.recorded_path.append(pt)
+
+    def _gps_cb(self, msg: NavSatFix):
+        # Use filtered GPS if valid
+        if msg.status.status >= 0:  # status >= 0 indicates valid fix for most drivers
+            self.geo['lat'] = float(msg.latitude)
+            self.geo['lon'] = float(msg.longitude)
+            self.geo['alt'] = float(msg.altitude)
+
+    def _gps_cb_raw(self, msg: NavSatFix):
+        # Only fill if we don't yet have filtered data
+        if self.geo.get('lat') is None or self.geo.get('lon') is None:
+            if msg.status.status >= 0:
+                self.geo['lat'] = float(msg.latitude)
+                self.geo['lon'] = float(msg.longitude)
+                self.geo['alt'] = float(msg.altitude)
 
     def set_route_data(self, data: Dict):
         # Ensure settings always exist with sane defaults
@@ -98,10 +164,23 @@ class NavCommander(Node):
         wp = next((w for w in self.route_data['waypoints'] if w['id'] == from_wp_id), None)
         if wp:
             # Start at the waypoint with its orientation and keep the id for saving
-            self.recorded_path = [{'x': float(wp['x']), 'y': float(wp['y']), 'yaw_deg': float(wp.get('yaw_deg', 0.0)), 'id': from_wp_id}]
+            start_pt = {'id': from_wp_id}
+            # Prefer ENU if provided; else convert from lat/lon
+            if 'x' in wp and 'y' in wp:
+                start_pt.update({'x': float(wp['x']), 'y': float(wp['y'])})
+            elif 'lat' in wp and 'lon' in wp:
+                xy = self._ll_to_xy_safe(float(wp['lat']), float(wp['lon']))
+                if xy:
+                    start_pt.update({'x': xy[0], 'y': xy[1]})
+            start_pt['yaw_deg'] = float(wp.get('yaw_deg', wp.get('heading_deg', 0.0)))
+            if 'lat' in wp and 'lon' in wp:
+                start_pt['lat'] = float(wp['lat']); start_pt['lon'] = float(wp['lon'])
+            self.recorded_path = [start_pt]
         else:
             # Start at current pose, still remember the intended from id
             p = {'x': self.pose['x'], 'y': self.pose['y'], 'yaw_deg': self.pose['yaw_deg'], 'id': from_wp_id}
+            if self.geo.get('lat') is not None and self.geo.get('lon') is not None:
+                p['lat'], p['lon'] = self.geo['lat'], self.geo['lon']
             self.recorded_path = [p]
         self.log_message(f'Route recording started from {from_wp_id}.')
 
@@ -135,16 +214,36 @@ class NavCommander(Node):
             # Normalize headings along the path, force final yaw to target waypoint yaw if available
             final_yaw = float(to_wp.get('yaw_deg', 0.0)) if to_wp else None
             path = self._apply_headings(path, final_yaw_deg=final_yaw)
+            # Enrich path with lat/lon if available via service
+            enriched_path = []
+            for p in path:
+                p2 = dict(p)
+                if ('lat' not in p2 or 'lon' not in p2) and ('x' in p2 and 'y' in p2):
+                    ll = self._xy_to_ll_safe(float(p2['x']), float(p2['y']))
+                    if ll:
+                        p2['lat'], p2['lon'] = ll
+                        p2['heading_deg'] = p2.get('yaw_deg')
+                enriched_path.append(p2)
             route_key = f"{from_wp_id}-{to_wp_id}"
-            self.route_data['routes'][route_key] = path
+            self.route_data['routes'][route_key] = enriched_path
             # Also create the reverse route
             rev_key = f"{to_wp_id}-{from_wp_id}"
-            rev_path = list(reversed(path))
+            rev_path = list(reversed(enriched_path))
             # For reverse, set final yaw to from_wp's yaw if available
             from_wp = next((w for w in self.route_data['waypoints'] if w['id'] == from_wp_id), None)
             rev_final_yaw = float(from_wp.get('yaw_deg', 0.0)) if from_wp else None
             rev_path = self._apply_headings(rev_path, final_yaw_deg=rev_final_yaw)
-            self.route_data['routes'][rev_key] = rev_path
+            # Backfill lat/lon on reverse if missing
+            final_rev = []
+            for p in rev_path:
+                p2 = dict(p)
+                if ('lat' not in p2 or 'lon' not in p2) and ('x' in p2 and 'y' in p2):
+                    ll = self._xy_to_ll_safe(float(p2['x']), float(p2['y']))
+                    if ll:
+                        p2['lat'], p2['lon'] = ll
+                        p2['heading_deg'] = p2.get('yaw_deg')
+                final_rev.append(p2)
+            self.route_data['routes'][rev_key] = final_rev
             self.log_message(f'Route {route_key} saved with {len(path)} points. Reverse saved as {rev_key}.')
         self.is_recording = False; self.recorded_path = []; self._record_from_id = None
 
@@ -332,8 +431,18 @@ class NavCommander(Node):
         return False
     
     def _create_pose_stamped(self, pose_dict):
-        p = PoseStamped(); p.header.frame_id = 'map'; p.pose.position.x = float(pose_dict['x']); p.pose.position.y = float(pose_dict['y'])
-        yaw_rad = math.radians(float(pose_dict.get('yaw_deg', 0.0))); o = euler_to_quaternion(0, 0, yaw_rad)
+        # Accept either ENU (x,y) or GPS (lat,lon); convert as needed
+        x = pose_dict.get('x')
+        y = pose_dict.get('y')
+        if (x is None or y is None) and ('lat' in pose_dict and 'lon' in pose_dict):
+            xy = self._ll_to_xy_safe(float(pose_dict['lat']), float(pose_dict['lon']))
+            if xy:
+                x, y = xy
+        if x is None or y is None:
+            raise ValueError('Pose missing x/y or lat/lon for conversion')
+        p = PoseStamped(); p.header.frame_id = 'map'; p.pose.position.x = float(x); p.pose.position.y = float(y)
+        yaw_src = pose_dict.get('yaw_deg', pose_dict.get('heading_deg', 0.0))
+        yaw_rad = math.radians(float(yaw_src)); o = euler_to_quaternion(0, 0, yaw_rad)
         p.pose.orientation.x, p.pose.orientation.y, p.pose.orientation.z, p.pose.orientation.w = o
         return p
     def _plan_cb(self, msg: Path): self.nav2_path = [{'x': p.pose.position.x, 'y': p.pose.position.y} for p in msg.poses]
@@ -343,11 +452,51 @@ class NavCommander(Node):
 def euler_from_quaternion(q): x, y, z, w = q; _, _, yaw = euler_from_quaternion_explicit(x, y, z, w); return _, _, yaw
 def euler_to_quaternion(r,p,y):cy=math.cos(y*0.5);sy=math.sin(y*0.5);cp=math.cos(p*0.5);sp=math.sin(p*0.5);cr=math.cos(r*0.5);sr=math.sin(r*0.5);return[sr*cp*cy-cr*sp*sy,cr*sp*cy+sr*cp*sy,cr*cp*sy-sr*sp*cy,cr*cp*cy+sr*sp*sy]
 def euler_from_quaternion_explicit(x,y,z,w):t0=+2.0*(w*x+y*z);t1=+1.0-2.0*(x*x+y*y);rx=math.atan2(t0,t1);t2=+2.0*(w*y-z*x);t2=+1.0 if t2>+1.0 else -1.0 if t2<-1.0 else t2;py=math.asin(t2);t3=+2.0*(w*z+x*y);t4=+1.0-2.0*(y*y+z*z);yz=math.atan2(t3,t4);return rx,py,yz
+
+def heading_to_cardinal(heading_deg: float) -> str:
+    # 16-wind compass rose labels
+    dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW']
+    ix = int((heading_deg + 11.25) // 22.5) % 16
+    return dirs[ix]
+
+def _wait_future(fut, timeout=2.0):
+    start = time.time()
+    while not fut.done() and (time.time() - start) < timeout:
+        time.sleep(0.01)
+    return fut.done()
+
+def _safe_cli_wait(cli, timeout=2.0) -> bool:
+    try:
+        return cli.wait_for_service(timeout_sec=timeout)
+    except Exception:
+        return False
+
+def _float_or_none(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+def _valid_ll(lat, lon) -> bool:
+    return lat is not None and lon is not None and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+
 app = Flask(__name__, static_url_path="/static"); node = None
 @app.route('/')
 def index(): return send_from_directory('.', 'index.html')
 @app.route('/api/status')
-def status(): return jsonify({'pose': node.pose, 'mission_mode': node.mission_mode, 'is_moving': node.is_moving, 'is_paused': node.is_paused, 'is_recording': node.is_recording, 'nav2_path': node.nav2_path, 'logs': list(node.log_messages), 'route_data': node.route_data, 'recorded_path': node.recorded_path})
+def status():
+    return jsonify({
+        'pose': node.pose,
+        'geo': node.geo,
+        'mission_mode': node.mission_mode,
+        'is_moving': node.is_moving,
+        'is_paused': node.is_paused,
+        'is_recording': node.is_recording,
+        'nav2_path': node.nav2_path,
+        'logs': list(node.log_messages),
+        'route_data': node.route_data,
+        'recorded_path': node.recorded_path
+    })
 @app.route('/api/set_route_data', methods=['POST'])
 def set_route_data(): node.set_route_data(request.get_json(force=True)); return jsonify({'ok': True})
 @app.route('/api/start_recording', methods=['POST'])
@@ -386,6 +535,6 @@ def ros_spin(): rclpy.spin(node)
 def main():
     global node; rclpy.init(); node = NavCommander(); threading.Thread(target=ros_spin, daemon=True).start()
     log = logging.getLogger('werkzeug'); log.setLevel(logging.ERROR)
-    print("Serving dashboard on http://0.0.0.0:8090")
+    print("Serving dashboard on http://0.0.0.0:8099")
     app.run(host='0.0.0.0', port=8099, debug=False, threaded=True)
 if __name__ == '__main__': main()
