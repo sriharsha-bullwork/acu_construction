@@ -7,6 +7,7 @@ from typing import List, Dict
 from collections import deque
 
 from flask import Flask, jsonify, request, send_from_directory
+import os
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -17,6 +18,13 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rcl_interfaces.msg import Log
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
+try:
+    # Prefer high-level Nav2 Simple Commander if available
+    from nav2_simple_commander.basic_navigator import BasicNavigator
+    from nav2_simple_commander.robot_navigator import TaskResult
+    HAVE_SIMPLE_NAV = True
+except Exception:
+    HAVE_SIMPLE_NAV = False
 
 class NavCommander(Node):
     def __init__(self):
@@ -41,12 +49,24 @@ class NavCommander(Node):
         self._record_from_id = None
         
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self._nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self._follow_path_client = ActionClient(self, FollowPath, 'follow_path')
-        self._through_poses_client = ActionClient(self, NavigateThroughPoses, 'navigate_through_poses')
+        # Nav2 control: prefer Simple Commander; fallback to raw action clients
+        self._navigator = BasicNavigator() if HAVE_SIMPLE_NAV else None
+        self._nav_to_pose_client = None
+        self._follow_path_client = None
+        self._through_poses_client = None
+        if not HAVE_SIMPLE_NAV:
+            self._nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+            self._follow_path_client = ActionClient(self, FollowPath, 'follow_path')
+            self._through_poses_client = ActionClient(self, NavigateThroughPoses, 'navigate_through_poses')
         self._last_goal_type = None  # 'nav_to_pose' | 'follow_path' | 'through_poses'
+        self._monitor_thread = None
         
-        self.create_subscription(Odometry, '/odom', self._odom_cb, qos_profile_sensor_data)
+        # Choose odom topic from env to support different robot setups
+        odom_topic = os.getenv('ODOM_TOPIC', '/diff_drive_base_controller/odom')
+        # Subscribe to /odom with both Best Effort (common for sensors) and Reliable (some stacks)
+        # to maximize compatibility across robots. Only one will actually match and deliver.
+        self.create_subscription(Odometry, odom_topic, self._odom_cb, qos_profile_sensor_data)
+        self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
         self.create_subscription(Path, '/plan', self._plan_cb, 10)
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('Dashboard node started and ready.')
@@ -234,24 +254,112 @@ class NavCommander(Node):
         return out
 
     def _execute_navigate_to_pose(self, wp_data):
-        if not self._nav_to_pose_client.server_is_ready(): self.log_message('NavigateToPose server not ready.'); self.is_moving = False; return
-        goal_pose = self._create_pose_stamped(wp_data); goal_msg = NavigateToPose.Goal(); goal_msg.pose = goal_pose
+        goal_pose = self._create_pose_stamped(wp_data)
         self._last_goal_type = 'nav_to_pose'
-        self._nav_to_pose_client.send_goal_async(goal_msg).add_done_callback(self._goal_response_callback)
+        if HAVE_SIMPLE_NAV and self._navigator is not None:
+            self._navigator.goToPose(goal_pose)
+            self._start_nav_monitor()
+        else:
+            if not self._nav_to_pose_client.server_is_ready():
+                self.log_message('NavigateToPose server not ready.'); self.is_moving = False; return
+            goal_msg = NavigateToPose.Goal(); goal_msg.pose = goal_pose
+            self._nav_to_pose_client.send_goal_async(goal_msg).add_done_callback(self._goal_response_callback)
 
     def _execute_follow_path(self, path_data):
-        if not self._follow_path_client.server_is_ready(): self.log_message('FollowPath server not ready.'); self.is_moving = False; return
+        # Prefer goThroughPoses or followWaypoints via Simple Commander; fallback to FollowPath action
+        if HAVE_SIMPLE_NAV and self._navigator is not None:
+            poses = [self._create_pose_stamped(p) for p in path_data]
+            # goThroughPoses maintains orientation across poses (closer to our old behavior)
+            try:
+                self._last_goal_type = 'through_poses'
+                self._navigator.goThroughPoses(poses)
+            except AttributeError:
+                # Older Simple Commander only has followWaypoints
+                self._last_goal_type = 'follow_path'
+                self._navigator.followWaypoints(poses)
+            self._start_nav_monitor()
+            return
+        if not self._follow_path_client or not self._follow_path_client.server_is_ready():
+            self.log_message('FollowPath server not ready.'); self.is_moving = False; return
         path_msg = Path(); path_msg.header.frame_id = 'map'
         path_msg.poses = [self._create_pose_stamped(p) for p in path_data]; goal_msg = FollowPath.Goal(); goal_msg.path = path_msg
         self._last_goal_type = 'follow_path'
         self._follow_path_client.send_goal_async(goal_msg).add_done_callback(self._goal_response_callback)
 
     def _execute_through_poses(self, path_data):
-        if not self._through_poses_client.server_is_ready(): self.log_message('NavigateThroughPoses server not ready.'); self.is_moving = False; return
-        goal_msg = NavigateThroughPoses.Goal()
-        goal_msg.poses = [self._create_pose_stamped(p) for p in path_data]
+        poses = [self._create_pose_stamped(p) for p in path_data]
+        if HAVE_SIMPLE_NAV and self._navigator is not None:
+            self._last_goal_type = 'through_poses'
+            # Use Simple Commander high-level API
+            try:
+                self._navigator.goThroughPoses(poses)
+            except AttributeError:
+                # Fallback to followWaypoints if goThroughPoses is not present
+                self._navigator.followWaypoints(poses)
+                self._last_goal_type = 'follow_path'
+            self._start_nav_monitor()
+            return
+        if not self._through_poses_client or not self._through_poses_client.server_is_ready():
+            self.log_message('NavigateThroughPoses server not ready.'); self.is_moving = False; return
+        goal_msg = NavigateThroughPoses.Goal(); goal_msg.poses = poses
         self._last_goal_type = 'through_poses'
         self._through_poses_client.send_goal_async(goal_msg).add_done_callback(self._goal_response_callback)
+
+    def _start_nav_monitor(self):
+        # Mark movement and start a lightweight monitor thread for the Simple Commander task
+        self.is_moving = True
+        def _monitor():
+            try:
+                # Poll task completion; publish basic feedback periodically
+                check_count = 0
+                while not self.is_paused and not self._navigator.isTaskComplete():
+                    fb = self._navigator.getFeedback()
+                    if fb and (check_count % 10 == 0):
+                        try:
+                            eta = getattr(getattr(fb, 'estimated_time_remaining', None), 'sec', None)
+                            if eta is not None:
+                                self.log_message(f'ETA: ~{eta}s')
+                        except Exception:
+                            pass
+                    check_count += 1
+                    time.sleep(0.1)
+                if self.is_paused:
+                    self.log_message('Navigation paused successfully.')
+                    self.is_moving = False
+                    return
+                # Completed; map TaskResult to status
+                status_text = 'UNKNOWN'
+                try:
+                    result = self._navigator.getResult()
+                    if result == TaskResult.SUCCEEDED:
+                        status_text = 'SUCCEEDED'
+                    elif result == TaskResult.CANCELED:
+                        status_text = 'CANCELED'
+                    elif result == TaskResult.FAILED:
+                        status_text = 'FAILED'
+                except Exception as e:
+                    status_text = f'UNKNOWN ({e})'
+                self.log_message(f"Navigation to '{self.current_goal_info.get('name')}' finished with status: {status_text}")
+                # If aborted/canceled near target, treat as success to allow new inputs
+                if self.mission_mode == 'active' and status_text in ('FAILED', 'CANCELED'):
+                    target_id = self.current_goal_info.get('target_id')
+                    target_wp = next((w for w in self.route_data.get('waypoints', []) if w['id'] == target_id), None)
+                    if target_wp and self._within_goal_tolerance(target_wp):
+                        self.log_message('Within goal tolerance; marking success.')
+                        self.is_moving = False; self.is_paused = False; return
+                # If a through-poses route aborted, retry from current progress
+                if self.mission_mode == 'active' and status_text in ('FAILED', 'CANCELED') and self._last_goal_type == 'through_poses':
+                    route = self.current_goal_info.get('through_path', [])
+                    if route:
+                        self.log_message('Route aborted; retrying from current progress in 2s...')
+                        threading.Timer(2.0, lambda: (not self.is_paused) and self._resume_route_from_progress()).start()
+                        return
+            finally:
+                self.is_moving = False
+                self.is_paused = False
+        # Launch monitor
+        self._monitor_thread = threading.Thread(target=_monitor, daemon=True)
+        self._monitor_thread.start()
 
     def _goal_response_callback(self, future):
         self._goal_handle = future.result()
@@ -283,7 +391,15 @@ class NavCommander(Node):
 
     def pause_mission(self):
         if not self.is_moving or self.is_paused: return
-        self.is_paused = True; self.log_message('Pausing current navigation goal...'); self.cancel_current_goal(paused_cancel=True)
+        self.is_paused = True
+        self.log_message('Pausing current navigation goal...')
+        if HAVE_SIMPLE_NAV and self._navigator is not None:
+            try:
+                self._navigator.cancelTask()
+            except Exception:
+                pass
+        else:
+            self.cancel_current_goal(paused_cancel=True)
 
     def resume_mission(self):
         if not self.is_paused: return
@@ -300,8 +416,14 @@ class NavCommander(Node):
     def cancel_current_goal(self, paused_cancel=False):
         if not paused_cancel: self.is_moving = False
         self.is_paused = paused_cancel
-        if self._goal_handle and self._goal_handle.status == GoalStatus.STATUS_EXECUTING:
-            self._goal_handle.cancel_goal_async()
+        if HAVE_SIMPLE_NAV and self._navigator is not None:
+            try:
+                self._navigator.cancelTask()
+            except Exception:
+                pass
+        else:
+            if getattr(self, '_goal_handle', None) and self._goal_handle.status == GoalStatus.STATUS_EXECUTING:
+                self._goal_handle.cancel_goal_async()
 
     def _resume_route_from_progress(self) -> bool:
         """Resume a through-poses route from the closest remaining point to the current pose.
@@ -347,7 +469,11 @@ app = Flask(__name__, static_url_path="/static"); node = None
 @app.route('/')
 def index(): return send_from_directory('.', 'index.html')
 @app.route('/api/status')
-def status(): return jsonify({'pose': node.pose, 'mission_mode': node.mission_mode, 'is_moving': node.is_moving, 'is_paused': node.is_paused, 'is_recording': node.is_recording, 'nav2_path': node.nav2_path, 'logs': list(node.log_messages), 'route_data': node.route_data, 'recorded_path': node.recorded_path})
+def status():
+    resp = jsonify({'pose': node.pose, 'mission_mode': node.mission_mode, 'is_moving': node.is_moving, 'is_paused': node.is_paused, 'is_recording': node.is_recording, 'nav2_path': node.nav2_path, 'logs': list(node.log_messages), 'route_data': node.route_data, 'recorded_path': node.recorded_path})
+    # Ensure browsers never cache status; always fetch fresh robot pose
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return resp
 @app.route('/api/set_route_data', methods=['POST'])
 def set_route_data(): node.set_route_data(request.get_json(force=True)); return jsonify({'ok': True})
 @app.route('/api/start_recording', methods=['POST'])
