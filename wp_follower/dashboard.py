@@ -17,6 +17,7 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from sensor_msgs.msg import NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as NavPath
+from geometry_msgs.msg import Twist
 
 # Support running as a script or as a package module
 try:
@@ -60,6 +61,64 @@ class NavBridge:
         self._paused: Optional[Dict] = None  # {'mode': 'single'|'route', ...}
         # Mission flag
         self._mission_active: bool = False
+        # Joystick/cmd_vel publisher
+        self._cmd_pub = self._helper.create_publisher(Twist, '/cmd_vel', 10)
+        self._max_lin = float(os.environ.get('JOY_MAX_LIN', '0.5'))
+        self._max_ang = float(os.environ.get('JOY_MAX_ANG', '1.0'))
+
+    # --- Waypoint management helpers ---
+    def _gen_new_wp_id(self) -> str:
+        base = 'wp'
+        max_n = 0
+        for w in self._waypoints:
+            wid = str(w.get('id', ''))
+            if wid.startswith(base + '_'):
+                try:
+                    n = int(wid.split('_')[-1])
+                    if n > max_n:
+                        max_n = n
+                except Exception:
+                    continue
+        return f'{base}_{max_n + 1}'
+
+    def add_waypoint(self, lat: float, lon: float, yaw_deg: float, name: Optional[str] = None) -> Dict:
+        with self._lock:
+            if self._status == 'active' or self._mode == 'mission':
+                return {'ok': False, 'error': 'cannot add waypoint during active task or mission'}
+            wid = self._gen_new_wp_id()
+            wp = {
+                'id': wid,
+                'name': name or wid,
+                'lat': float(lat),
+                'lon': float(lon),
+                'yaw_deg': float(yaw_deg or 0.0),
+            }
+            self._waypoints.append(wp)
+            return {'ok': True, 'waypoint': wp}
+
+    def rename_waypoint(self, wp_id: str, new_name: str) -> Dict:
+        with self._lock:
+            if self._status == 'active':
+                return {'ok': False, 'error': 'cannot rename during active task'}
+            w = self._find_wp(wp_id)
+            if not w:
+                return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
+            w['name'] = str(new_name)
+            return {'ok': True, 'waypoint': w}
+
+    def delete_waypoint(self, wp_id: str) -> Dict:
+        with self._lock:
+            if self._status == 'active':
+                return {'ok': False, 'error': 'cannot delete during active task'}
+            before = len(self._waypoints)
+            self._waypoints = [w for w in self._waypoints if str(w.get('id')) != str(wp_id)]
+            if len(self._waypoints) == before:
+                return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
+            # Also scrub routes that reference it
+            for r in self._routes:
+                ids = r.get('waypoint_ids', [])
+                r['waypoint_ids'] = [i for i in ids if str(i) != str(wp_id)]
+            return {'ok': True}
 
     def list_waypoints(self) -> List[Dict]:
         # Return presentation-friendly fields
@@ -89,6 +148,27 @@ class NavBridge:
             }
             for r in self._routes
         ]
+
+    def publish_cmd_vel(self, lx_norm: float, az_norm: float) -> Dict:
+        """Publish normalized cmd_vel from joystick to /cmd_vel.
+
+        - lx_norm: linear.x in [-1, 1]
+        - az_norm: angular.z in [-1, 1]
+        If both are near zero, do not publish (per requirement).
+        """
+        with self._lock:
+            try:
+                lx = max(-1.0, min(1.0, float(lx_norm)))
+                az = max(-1.0, min(1.0, float(az_norm)))
+                if abs(lx) < 1e-6 and abs(az) < 1e-6:
+                    return {'ok': True, 'skipped': True}
+                msg = Twist()
+                msg.linear.x = lx * self._max_lin
+                msg.angular.z = az * self._max_ang
+                self._cmd_pub.publish(msg)
+                return {'ok': True}
+            except Exception as e:
+                return {'ok': False, 'error': str(e)}
 
     def list_waypoints_local(self) -> List[Dict]:
         """Return waypoints converted to local map frame coordinates.
@@ -660,6 +740,41 @@ def create_app() -> Flask:
     def api_telemetry():
         gps, heading, odom, plan = _sample_telem_once()
         return jsonify({'gps': gps, 'heading_deg': heading, 'odom': odom, 'plan': plan})
+
+    # Waypoint management endpoints
+    @app.post('/api/waypoints/add_current')
+    def api_waypoints_add_current():
+        # Only allow when not in mission and not active
+        if nav._status == 'active' or nav._mode == 'mission':
+            return jsonify({'ok': False, 'error': 'not allowed during active task or mission'}), 400
+        gps, heading, _, _ = _sample_telem_once()
+        if not gps or 'lat' not in gps or 'lon' not in gps:
+            return jsonify({'ok': False, 'error': 'no GPS fix available'}), 400
+        yaw = float(heading) if heading is not None else 0.0
+        name = request.json.get('name') if request.is_json else None
+        return jsonify(nav.add_waypoint(float(gps['lat']), float(gps['lon']), yaw, name=name))
+
+    @app.post('/api/waypoints/rename/<wp_id>')
+    def api_waypoints_rename(wp_id: str):
+        payload = request.get_json(silent=True) or {}
+        new_name = payload.get('name')
+        if not new_name:
+            return jsonify({'ok': False, 'error': 'missing name'}), 400
+        return jsonify(nav.rename_waypoint(wp_id, str(new_name)))
+
+    @app.delete('/api/waypoints/<wp_id>')
+    def api_waypoints_delete(wp_id: str):
+        return jsonify(nav.delete_waypoint(wp_id))
+
+    @app.post('/api/cmd_vel')
+    def api_cmd_vel():
+        payload = request.get_json(silent=True) or {}
+        try:
+            lx = float(payload.get('lx', 0.0))
+            az = float(payload.get('az', 0.0))
+        except Exception:
+            return jsonify({'ok': False, 'error': 'invalid payload'}), 400
+        return jsonify(nav.publish_cmd_vel(lx, az))
 
     # Mission endpoints
     @app.post('/api/mission/start')

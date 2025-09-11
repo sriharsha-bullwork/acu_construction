@@ -9,6 +9,7 @@
     <header>
       <h1>Waypoint Dashboard</h1>
       <div class="controls">
+        <button id="saveCurrentBtn" title="Save current GPS as waypoint">Save Current</button>
         <button id="missionStartBtn" title="Start mission over all waypoints">Start Mission</button>
         <button id="missionStopBtn" title="Stop mission and reset">Stop Mission</button>
         <button id="exportBtn" title="Export waypoints/routes">Export</button>
@@ -44,6 +45,12 @@
           </div>
         </section>
         <section>
+          <h2>Joystick</h2>
+          <div id="joystick" class="joystick">
+            <div id="stick" class="stick"></div>
+          </div>
+        </section>
+        <section>
           <h2>Routes</h2>
           <div id="routeList" class="list"></div>
         </section>
@@ -60,6 +67,9 @@
           if (!enabled) btn.title = 'Start Mission to enable manual goals';
           else btn.title = 'Send goal to this waypoint';
         });
+        // Enable Save Current only when NOT in mission mode
+        const saveBtn = document.getElementById('saveCurrentBtn');
+        if (saveBtn) saveBtn.disabled = !!missionMode;
       }
 
       // Simple vehicle view state
@@ -267,6 +277,35 @@
           btn.disabled = !missionMode;
           btn.title = missionMode ? 'Send goal to this waypoint' : 'Start Mission to enable manual goals';
           actions.appendChild(btn);
+          // Rename
+          const rbtn = document.createElement('button');
+          rbtn.textContent = 'Rename';
+          rbtn.onclick = async () => {
+            const newName = prompt('New name for waypoint', wp.name || wp.id);
+            if (!newName) return;
+            const r = await fetch(`/api/waypoints/rename/${wp.id}`, {
+              method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name:newName})
+            });
+            const j = await r.json();
+            if (!j.ok) alert(j.error || 'Rename failed');
+            await loadWaypoints();
+            await loadWaypointsLocal();
+            redrawCanvas();
+          };
+          actions.appendChild(rbtn);
+          // Delete
+          const dbtn = document.createElement('button');
+          dbtn.textContent = 'Delete';
+          dbtn.onclick = async () => {
+            if (!confirm(`Delete waypoint ${wp.name || wp.id}?`)) return;
+            const r = await fetch(`/api/waypoints/${wp.id}`, { method: 'DELETE' });
+            const j = await r.json();
+            if (!j.ok) alert(j.error || 'Delete failed');
+            await loadWaypoints();
+            await loadWaypointsLocal();
+            redrawCanvas();
+          };
+          actions.appendChild(dbtn);
           row.appendChild(label);
           row.appendChild(meta);
           row.appendChild(actions);
@@ -390,6 +429,18 @@
         }
       };
 
+      document.getElementById('saveCurrentBtn').onclick = async () => {
+        const name = prompt('Name for new waypoint (optional)', '');
+        const r = await fetch('/api/waypoints/add_current', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: name || undefined })
+        });
+        const j = await r.json();
+        if (!j.ok) { alert(j.error || 'Failed to save waypoint'); return; }
+        await loadWaypoints();
+        await loadWaypointsLocal();
+        redrawCanvas();
+      };
+
       document.getElementById('importFile').addEventListener('change', async (e) => {
         const file = e.target.files && e.target.files[0];
         if (!file) return;
@@ -463,6 +514,85 @@
       window.addEventListener('resize', () => {
         if (lastOdom) drawVehicle(lastOdom);
       });
+
+      // Joystick logic
+      (function initJoystick(){
+        const joy = document.getElementById('joystick');
+        const stick = document.getElementById('stick');
+        if (!joy || !stick) return;
+
+        let active = false;
+        let vec = { x: 0, y: 0 };
+        let sendTimer = null;
+        const dead = 0.08; // deadzone (normalized)
+
+        function setStick(x, y) { // x,y in px relative to center
+          stick.style.transform = `translate(${x}px, ${y}px)`;
+        }
+
+        function startSendLoop() {
+          if (sendTimer) return;
+          sendTimer = setInterval(async () => {
+            const mag = Math.hypot(vec.x, vec.y);
+            if (!active || mag < dead) return; // do not publish when centered
+            const lx = -vec.y; // up -> +linear.x
+            const az = -vec.x; // right -> -angular.z
+            try {
+              await fetch('/api/cmd_vel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lx, az }),
+              });
+            } catch (e) {}
+          }, 100); // ~10 Hz
+        }
+
+        function stopSendLoop() {
+          if (sendTimer) clearInterval(sendTimer);
+          sendTimer = null;
+        }
+
+        function updateFromPointer(clientX, clientY) {
+          const r = joy.getBoundingClientRect();
+          const cx = r.left + r.width / 2;
+          const cy = r.top + r.height / 2;
+          let dx = clientX - cx;
+          let dy = clientY - cy;
+          const radius = Math.min(r.width, r.height) / 2 - 16; // margin for stick
+          const dist = Math.hypot(dx, dy);
+          if (dist > radius) { const s = radius / dist; dx *= s; dy *= s; }
+          setStick(dx, dy);
+          // normalize to [-1,1]
+          vec.x = dx / radius;
+          vec.y = dy / radius;
+        }
+
+        function resetStick() {
+          vec.x = 0; vec.y = 0;
+          setStick(0, 0);
+        }
+
+        joy.addEventListener('pointerdown', (e) => {
+          active = true;
+          joy.setPointerCapture(e.pointerId);
+          updateFromPointer(e.clientX, e.clientY);
+          startSendLoop();
+        });
+        joy.addEventListener('pointermove', (e) => {
+          if (!active) return;
+          updateFromPointer(e.clientX, e.clientY);
+        });
+        function endPointer(e){
+          active = false;
+          try { joy.releasePointerCapture(e.pointerId); } catch {}
+          resetStick();
+          // do NOT publish when centered per requirement
+          stopSendLoop();
+        }
+        joy.addEventListener('pointerup', endPointer);
+        joy.addEventListener('pointercancel', endPointer);
+        joy.addEventListener('pointerleave', endPointer);
+      })();
     </script>
   </body>
   </html>

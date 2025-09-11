@@ -1,5 +1,17 @@
 Waypoints Follower (wp_follower) — System Overview and Developer Guide
 
+Introduction — Material Handling Use Case and Strict Routes
+
+This application targets material handling operations where an autonomous vehicle (often towing a trailer) services Points of Interest (POIs) across a site (e.g., pick up debris at A, unload at B). After completing work at one POI, the vehicle is commanded to move to another. Movement between specific pairs of POIs must follow a prerecorded, non-deviating route for safety, access control, or site policies. These “strict routes” are provided as external sequences of GPS coordinates which the system converts into map-frame poses and enforces for transit.
+
+Key implications for design and workflow:
+- Routes Between POIs: The system supports configuring an explicit route between two points; when traveling between those points, the vehicle must always take that prescribed route rather than a shortest-path replan.
+- External GPS Tracks: Routes are defined as ordered GPS points recorded in the field and imported as JSON; the backend converts them to poses in the map frame.
+- Non‑Deviation: When a strict route is chosen, the vehicle should follow the provided sequence (or the resulting Nav2 plan) without deviating. This is distinct from free navigation to a single waypoint.
+- Editing and Curation: Operators can import waypoints and routes, rename and delete waypoints, and export curated datasets for reuse and versioning.
+
+The rest of this guide explains the implementation, APIs, telemetry, and UI so you can extend the system to manage strict routes, validate compliance, and evolve material handling workflows.
+
 This document explains the architecture, data flow, and implementation details of the Waypoints Follower subsystem. It covers:
 - Backend components (ROS 2 + Flask) in `dashboard.py`
 - Utility/ROS bridge functions in `wp_follower.py`
@@ -277,4 +289,3 @@ Browse to `http://localhost:5000/`.
 - `demo_wp.json`, `demo_wp.yaml` — example data
 
 End of document.
-
