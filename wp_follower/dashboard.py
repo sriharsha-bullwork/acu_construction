@@ -48,6 +48,8 @@ class NavBridge:
         self._route_id: Optional[str] = None
         self._route_total: int = 0
         self._route_current: Optional[int] = None
+        # Pause/Resume support
+        self._paused: Optional[Dict] = None  # {'mode': 'single'|'route', ...}
 
     def list_waypoints(self) -> List[Dict]:
         # Return presentation-friendly fields
@@ -147,6 +149,114 @@ class NavBridge:
                 # Mark as canceling; final status will settle on next poll
                 self._status = 'canceled'
                 return {'ok': True, 'status': self._status}
+            except Exception as e:
+                self._status = 'error'
+                self._last_error = str(e)
+                return {'ok': False, 'error': str(e)}
+
+    def pause(self) -> Dict:
+        """Pause current task by canceling and storing resume state."""
+        with self._lock:
+            if self._status != 'active':
+                return {'ok': False, 'error': 'no active task to pause'}
+            try:
+                fb = None
+                try:
+                    fb = self._navigator.getFeedback()
+                except Exception:
+                    fb = None
+
+                # Capture progress info for routes
+                if self._mode == 'route':
+                    idx = None
+                    if fb is not None and hasattr(fb, 'current_waypoint'):
+                        try:
+                            idx = int(fb.current_waypoint)
+                        except Exception:
+                            idx = None
+                    if idx is None:
+                        idx = self._route_current or 0
+                    self._paused = {
+                        'mode': 'route',
+                        'route_id': self._route_id,
+                        'index': max(0, int(idx)),
+                    }
+                else:  # single goal pause
+                    self._paused = {
+                        'mode': 'single',
+                        'wp_id': self._last_goal_id,
+                    }
+
+                self._navigator.cancelTask()
+                self._status = 'paused'
+                return {'ok': True, 'status': self._status}
+            except Exception as e:
+                self._status = 'error'
+                self._last_error = str(e)
+                return {'ok': False, 'error': str(e)}
+
+    def resume(self) -> Dict:
+        """Resume a previously paused task from stored state."""
+        with self._lock:
+            if not self._paused:
+                return {'ok': False, 'error': 'no paused task to resume'}
+            try:
+                paused = self._paused
+                self._paused = None
+                if paused.get('mode') == 'single':
+                    wp_id = paused.get('wp_id')
+                    if not wp_id:
+                        return {'ok': False, 'error': 'paused single goal missing id'}
+                    # Re-send the same waypoint goal (robot continues from current pose)
+                    wp = self._find_wp(wp_id)
+                    if not wp:
+                        return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
+                    local = gps_point_to_local(self._helper, wp)
+                    pose = build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
+                    self._navigator.goToPose(pose)
+                    self._last_goal_id = wp_id
+                    self._status = 'active'
+                    self._last_error = None
+                    self._mode = 'single'
+                    self._route_id = None
+                    self._route_total = 0
+                    self._route_current = None
+                    return {'ok': True, 'status': self._status, 'goal_id': wp_id}
+
+                # Route resume
+                route_id = paused.get('route_id')
+                start_idx = int(paused.get('index', 0))
+                route = next((r for r in self._routes if r.get('id') == route_id), None)
+                if not route:
+                    return {'ok': False, 'error': f'route not found: {route_id}'}
+                wp_ids = route.get('waypoint_ids', [])
+                if start_idx >= len(wp_ids):
+                    # Nothing to resume; treat as success
+                    self._status = 'succeeded'
+                    self._mode = 'none'
+                    self._route_id = None
+                    self._route_total = 0
+                    self._route_current = None
+                    return {'ok': True, 'status': 'succeeded'}
+
+                poses = []
+                for wid in wp_ids[start_idx:]:
+                    w = self._find_wp(wid)
+                    if not w:
+                        return {'ok': False, 'error': f'waypoint id not found in route: {wid}'}
+                    local = gps_point_to_local(self._helper, w)
+                    poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+
+                self._navigator.followWaypoints(poses)
+                self._last_goal_id = None
+                self._status = 'active'
+                self._last_error = None
+                self._mode = 'route'
+                self._route_id = route_id
+                # Track progress for the resumed segment
+                self._route_total = len(poses)
+                self._route_current = 0
+                return {'ok': True, 'status': self._status, 'route_id': route_id}
             except Exception as e:
                 self._status = 'error'
                 self._last_error = str(e)
@@ -306,6 +416,14 @@ def create_app() -> Flask:
     @app.post('/api/cancel')
     def api_cancel():
         return jsonify(nav.cancel())
+
+    @app.post('/api/pause')
+    def api_pause():
+        return jsonify(nav.pause())
+
+    @app.post('/api/resume')
+    def api_resume():
+        return jsonify(nav.resume())
 
     return app
 

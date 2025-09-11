@@ -9,6 +9,8 @@
     <header>
       <h1>Waypoint Dashboard</h1>
       <div class="controls">
+        <button id="pauseBtn" title="Pause current task">Pause</button>
+        <button id="resumeBtn" title="Resume paused task">Resume</button>
         <button id="cancelBtn" title="Cancel current task">Cancel</button>
       </div>
     </header>
@@ -128,6 +130,20 @@
         const r = await fetch('/api/cancel', { method: 'POST' });
         const j = await r.json();
         if (!j.ok) alert(j.error || 'Failed to cancel');
+        await updateStatus();
+      };
+
+      document.getElementById('pauseBtn').onclick = async () => {
+        const r = await fetch('/api/pause', { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Failed to pause');
+        await updateStatus();
+      };
+
+      document.getElementById('resumeBtn').onclick = async () => {
+        const r = await fetch('/api/resume', { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Failed to resume');
         await updateStatus();
       };
 
