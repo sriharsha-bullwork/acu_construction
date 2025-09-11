@@ -12,6 +12,9 @@ import rclpy
 from rclpy.node import Node
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from nav_msgs.msg import Path as MsgPath
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 # Support running as a script or as a package module
 try:
@@ -58,6 +61,82 @@ class NavBridge:
         self._route_id: Optional[str] = None
         self._route_total: int = 0
         self._route_current: Optional[int] = None
+        self._goal_target: Optional[Tuple[float, float]] = None
+        self._route_targets: List[Tuple[float, float]] = []
+
+        # Subscribe to global plan; we will pump callbacks using spin_once
+        self._last_plan_xy: List[Tuple[float, float]] = []
+        self._plan_sub = self._helper.create_subscription(
+            MsgPath, '/plan', self._on_plan, 10
+        )
+
+        # Subscribe to AMCL pose (map frame) for robust robot position
+        self._amcl_pose: Optional[Tuple[float, float, float]] = None  # x,y,yaw_rad
+        self._amcl_sub = self._helper.create_subscription(
+            PoseWithCovarianceStamped, '/amcl_pose', self._on_amcl_pose, 10
+        )
+        # Subscribe to global odometry (preferred pose source if available)
+        self._odom_pose: Optional[Tuple[float, float, float]] = None
+        self._odom_sub = self._helper.create_subscription(
+            Odometry, '/odometry/global', self._on_odom, 10
+        )
+
+    def _on_plan(self, msg: MsgPath):
+        try:
+            pts = []
+            for ps in msg.poses:
+                pts.append((float(ps.pose.position.x), float(ps.pose.position.y)))
+            with self._lock:
+                self._last_plan_xy = pts
+        except Exception:
+            pass
+
+    def _on_amcl_pose(self, msg: PoseWithCovarianceStamped):
+        try:
+            x = float(msg.pose.pose.position.x)
+            y = float(msg.pose.pose.position.y)
+            q = msg.pose.pose.orientation
+            import math
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            yaw = math.atan2(siny_cosp, cosy_cosp)
+            with self._lock:
+                self._amcl_pose = (x, y, yaw)
+        except Exception:
+            pass
+
+    def _on_odom(self, msg: Odometry):
+        try:
+            x = float(msg.pose.pose.position.x)
+            y = float(msg.pose.pose.position.y)
+            q = msg.pose.pose.orientation
+            import math
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            yaw = math.atan2(siny_cosp, cosy_cosp)
+            with self._lock:
+                self._odom_pose = (x, y, yaw)
+        except Exception:
+            pass
+
+    def _get_pose_map(self) -> Optional[Tuple[float, float, float]]:
+        # Prefer /odometry/global, then AMCL, then BasicNavigator
+        with self._lock:
+            if self._odom_pose is not None:
+                return self._odom_pose
+            if self._amcl_pose is not None:
+                return self._amcl_pose
+        pose = self._navigator.getCurrentPose()
+        if pose is None:
+            return None
+        import math
+        x = float(pose.pose.position.x)
+        y = float(pose.pose.position.y)
+        q = pose.pose.orientation
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return (x, y, yaw)
 
     def list_waypoints(self) -> List[Dict]:
         # Return presentation-friendly fields
@@ -97,6 +176,12 @@ class NavBridge:
             if not wp:
                 return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
             try:
+                # Cancel any existing task to ensure a clean state
+                try:
+                    self._navigator.cancelTask()
+                except Exception:
+                    pass
+
                 local = gps_point_to_local(self._helper, wp)
                 pose = build_goal_pose(
                     self._navigator,
@@ -110,6 +195,8 @@ class NavBridge:
                 self._route_id = None
                 self._route_total = 0
                 self._route_current = None
+                self._goal_target = (float(local['x']), float(local['y']))
+                self._route_targets = []
                 return {'ok': True, 'status': self._status, 'goal_id': wp_id}
             except Exception as e:
                 self._status = 'error'
@@ -127,14 +214,14 @@ class NavBridge:
 
             try:
                 poses = []
+                targets: List[Tuple[float, float]] = []
                 for wid in wp_ids:
                     w = self._find_wp(wid)
                     if not w:
                         raise ValueError(f'waypoint id not found in route: {wid}')
                     local = gps_point_to_local(self._helper, w)
-                    poses.append(
-                        build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
-                    )
+                    poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                    targets.append((float(local['x']), float(local['y'])))
 
                 self._navigator.followWaypoints(poses)
                 self._last_goal_id = None
@@ -144,6 +231,8 @@ class NavBridge:
                 self._route_id = route_id
                 self._route_total = len(poses)
                 self._route_current = 0
+                self._route_targets = targets
+                self._goal_target = None
                 return {'ok': True, 'status': self._status, 'route_id': route_id}
             except Exception as e:
                 self._status = 'error'
@@ -165,31 +254,82 @@ class NavBridge:
     def current_pose_ll(self) -> Dict:
         """Return robot current pose as lat/lon if available."""
         try:
-            pose = self._navigator.getCurrentPose()
-            if pose is None:
+            try:
+                rclpy.spin_once(self._helper, timeout_sec=0.0)
+            except Exception:
+                pass
+            pose_map = self._get_pose_map()
+            if pose_map is None:
                 return {'ok': False, 'error': 'no pose'}
-            x = float(pose.pose.position.x)
-            y = float(pose.pose.position.y)
-            lat, lon, _alt = map_xy_to_ll(self._helper, x, y, 0.0)
-            # Compute yaw (radians) from quaternion
-            q = pose.pose.orientation
-            # yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z)), but roll/pitch ~ 0 here
-            import math
-            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-            yaw = math.atan2(siny_cosp, cosy_cosp)
-            return {
-                'ok': True,
-                'lat': float(lat),
-                'lon': float(lon),
-                'yaw_deg': float(yaw * 180.0 / 3.141592653589793),
-            }
+            x, y, yaw = pose_map
+            try:
+                lat, lon, _alt = map_xy_to_ll(self._helper, x, y, 0.0)
+                return {
+                    'ok': True,
+                    'frame': 'geo',
+                    'lat': float(lat),
+                    'lon': float(lon),
+                    'yaw_deg': float(yaw * 180.0 / 3.141592653589793),
+                }
+            except Exception:
+                # Fallback: return map frame coordinates
+                return {
+                    'ok': True,
+                    'frame': 'map',
+                    'x': float(x),
+                    'y': float(y),
+                    'yaw_deg': float(yaw * 180.0 / 3.141592653589793),
+                }
         except Exception as e:
             return {'ok': False, 'error': str(e)}
+
+    def current_plan_ll(self) -> Dict:
+        """Return latest global plan in geo if possible, else map frame."""
+        try:
+            try:
+                rclpy.spin_once(self._helper, timeout_sec=0.0)
+            except Exception:
+                pass
+            with self._lock:
+                pts_xy = list(self._last_plan_xy)
+            # Try convert to geo
+            points_geo = []
+            try:
+                for x, y in pts_xy:
+                    lat, lon, _ = map_xy_to_ll(self._helper, x, y, 0.0)
+                    points_geo.append({'lat': float(lat), 'lon': float(lon)})
+                return {'ok': True, 'frame': 'geo', 'points': points_geo}
+            except Exception:
+                return {
+                    'ok': True,
+                    'frame': 'map',
+                    'points': [{'x': float(x), 'y': float(y)} for x, y in pts_xy],
+                }
+        except Exception as e:
+            return {'ok': False, 'error': str(e), 'points': []}
+
+    def waypoints_local(self) -> List[Dict]:
+        try:
+            try:
+                rclpy.spin_once(self._helper, timeout_sec=0.0)
+            except Exception:
+                pass
+            try:
+                from .wp_follower import gps_points_to_local  # local import to avoid cycles
+            except Exception:
+                from wp_follower import gps_points_to_local
+            locals_ = gps_points_to_local(self._helper, self._waypoints)
+            return locals_
+        except Exception:
+            return []
 
     def poll_status(self) -> Dict:
         """Check and return the current goal status without blocking."""
         with self._lock:
+            try:
+                rclpy.spin_once(self._helper, timeout_sec=0.0)
+            except Exception:
+                pass
             if self._status not in ('active',):
                 return {
                     'status': self._status,
@@ -218,6 +358,20 @@ class NavBridge:
                         # Nav2 provides builtin_interfaces/Duration
                         dur = fb.estimated_time_remaining
                         eta = float(dur.sec) + float(dur.nanosec) / 1e9
+
+                    # If no distance feedback, compute from current pose and target in map frame
+                    if distance is None:
+                        pose_map = self._get_pose_map()
+                        if pose_map is not None:
+                            import math
+                            px, py, _ = pose_map
+                            if self._mode == 'single' and self._goal_target is not None:
+                                gx, gy = self._goal_target
+                                distance = math.hypot(gx - px, gy - py)
+                            elif self._mode == 'route' and self._route_targets and self._route_current is not None:
+                                idx = min(max(int(self._route_current), 0), len(self._route_targets) - 1)
+                                gx, gy = self._route_targets[idx]
+                                distance = math.hypot(gx - px, gy - py)
 
                     # Route progress if available
                     if self._mode == 'route' and fb is not None and hasattr(fb, 'current_waypoint'):
@@ -248,6 +402,10 @@ class NavBridge:
                 else:
                     self._status = 'error'
                     self._last_error = 'unknown result'
+
+                # Reset targets after completion to allow new goals cleanly
+                self._goal_target = None
+                self._route_targets = []
 
                 return {
                     'status': self._status,
@@ -345,6 +503,14 @@ def create_app() -> Flask:
     @app.get('/api/robot_pose')
     def api_robot_pose():
         return jsonify(nav.current_pose_ll())
+
+    @app.get('/api/plan')
+    def api_plan():
+        return jsonify(nav.current_plan_ll())
+
+    @app.get('/api/waypoints_local')
+    def api_waypoints_local():
+        return jsonify(nav.waypoints_local())
 
     return app
 

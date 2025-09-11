@@ -16,9 +16,9 @@ body {
   background: var(--bg); color: var(--text);
 }
 
-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+header { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; margin-bottom: 12px; }
 h1 { margin: 0; font-size: 20px; }
-h2 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
+h2 { font-size: 16px; margin: 12px 0 8px; color: var(--accent); }
 
 .controls button, .actions button, button {
   background: var(--accent); color: #ffffff; border: none; border-radius: 6px;
@@ -26,7 +26,7 @@ h2 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
 }
 .controls button:hover, .actions button:hover { filter: brightness(1.05); }
 
-.list { background: var(--panel); border-radius: 8px; padding: 8px; border: 1px solid var(--border); }
+.list { background: var(--panel); border-radius: 8px; padding: 8px; border: 1px solid var(--border); max-height: 45vh; overflow: auto; }
 .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--border); }
 .row:last-child { border-bottom: none; }
 .label { font-weight: 600; }
@@ -34,7 +34,29 @@ h2 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
 .actions { display: flex; gap: 8px; }
 
 .status { margin-top: 8px; font-weight: 700; }
-.metrics { display: flex; gap: 16px; margin-top: 6px; color: var(--muted); }
+.statusbar { display: flex; flex-direction: column; gap: 6px; }
+.metrics { display: flex; gap: 16px; margin-top: 2px; color: var(--muted); flex-wrap: wrap; }
 .empty { color: var(--muted); padding: 8px; }
 
 .map { height: 360px; border-radius: 8px; border: 1px solid var(--border); }
+.content { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+.left { min-width: 0; }
+.right { min-width: 240px; }
+
+.robot-wrap { width: 24px; height: 24px; transform-origin: 50% 50%; }
+.robot-marker {
+  width: 18px; height: 18px; border: 2px solid #e53e3e; border-radius: 50%;
+  background: #fff; position: relative; box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  top: 3px; left: 3px;
+}
+.robot-marker::after {
+  content: ''; position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 8px solid #e53e3e;
+}
+
+/* Ensure divIcon-based robot marker is visible and above tiles */
+.leaflet-marker-icon.robot-icon {
+  background: transparent !important;
+  border: none !important;
+  z-index: 1000 !important;
+}

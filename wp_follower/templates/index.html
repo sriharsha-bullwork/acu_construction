@@ -14,31 +14,39 @@
   <body>
     <header>
       <h1>Waypoint Dashboard</h1>
+      <div class="statusbar">
+        <div id="status" class="status">Status: idle</div>
+        <div id="metrics" class="metrics">
+          <div><strong>Distance:</strong> <span id="distVal">—</span></div>
+          <div><strong>ETA:</strong> <span id="etaVal">—</span></div>
+          <div><strong>Route Progress:</strong> <span id="progVal">—</span></div>
+          <div><strong>Pose:</strong> <span id="poseVal">—</span></div>
+          <div><strong>Heading:</strong> <span id="headVal">—</span></div>
+        </div>
+      </div>
       <div class="controls">
         <button id="cancelBtn" title="Cancel current task">Cancel</button>
       </div>
     </header>
 
-    <section>
-      <h2>Waypoints</h2>
-      <div id="wpList" class="list"></div>
-    </section>
-
-    <section>
-      <h2>Routes</h2>
-      <div id="routeList" class="list"></div>
-    </section>
-
-    <section>
-      <h2>Map</h2>
-      <div id="map" class="map"></div>
-    </section>
-
-    <section>
-      <h2>Status</h2>
-      <div id="status" class="status">Status: idle</div>
-      <div id="metrics" class="metrics"></div>
-    </section>
+    <div class="content">
+      <div class="left">
+        <section>
+          <h2>Map</h2>
+          <div id="map" class="map"></div>
+        </section>
+      </div>
+      <div class="right">
+        <section>
+          <h2>Waypoints</h2>
+          <div id="wpList" class="list"></div>
+        </section>
+        <section>
+          <h2>Routes</h2>
+          <div id="routeList" class="list"></div>
+        </section>
+      </div>
+    </div>
 
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -46,15 +54,27 @@
       crossorigin=""
     ></script>
     <script>
-      let map, wpLayer, robotMarker;
+      let map, wpLayer, robotMarker, planLayer;
+      let mapMode = null; // 'geo' or 'map'
+      let waypointsLoaded = false;
 
-      function initMap(center) {
+      function initMap(center, mode) {
         if (map) return;
-        map = L.map('map');
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          maxZoom: 19,
-          attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
+        if (typeof L === 'undefined') {
+          const el = document.getElementById('map');
+          if (el) el.innerHTML = '<div style="padding:8px;color:#a00">Map library unavailable. Check internet/connectivity to Leaflet CDN.</div>';
+          return;
+        }
+        mapMode = mode || 'geo';
+        if (mapMode === 'geo') {
+          map = L.map('map');
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+          }).addTo(map);
+        } else {
+          map = L.map('map', { crs: L.CRS.Simple });
+        }
         wpLayer = L.layerGroup().addTo(map);
         map.setView(center || [0,0], 18);
       }
@@ -69,12 +89,24 @@
       }
 
       function drawWaypointsOnMap(waypoints) {
-        if (!map) initMap(waypoints.length ? [waypoints[0].lat, waypoints[0].lon] : [0,0]);
+        if (!map) {
+          // Detect frame from waypoint fields
+          const first = waypoints[0] || {};
+          if (first.lat != null && first.lon != null) {
+            initMap([first.lat, first.lon], 'geo');
+          } else if (first.x != null && first.y != null) {
+            initMap([first.y, first.x], 'map');
+          } else {
+            initMap([0,0], 'geo');
+          }
+        }
         wpLayer.clearLayers();
         const bounds = [];
         waypoints.forEach(wp => {
           const color = colorForWaypoint(wp);
-          const m = L.circleMarker([wp.lat, wp.lon], {
+          const lat = (mapMode === 'geo') ? wp.lat : wp.y;
+          const lon = (mapMode === 'geo') ? wp.lon : wp.x;
+          const m = L.circleMarker([lat, lon], {
             radius: 7,
             color,
             weight: 2,
@@ -89,29 +121,105 @@
             await updateStatus();
           })
           .addTo(wpLayer);
-          bounds.push([wp.lat, wp.lon]);
+          bounds.push([lat, lon]);
         });
         if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
+      }
+
+      function makeRobotIcon(headingDeg) {
+        const rot = isFinite(headingDeg) ? headingDeg : 0;
+        return L.divIcon({
+          className: 'robot-icon',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+          html: `
+            <div class="robot-wrap" style="transform: rotate(${rot}deg)">
+              <div class="robot-marker"></div>
+            </div>
+          `
+        });
       }
 
       async function updateRobotMarker() {
         try {
           const resp = await fetch('/api/robot_pose');
           const j = await resp.json();
-          if (!j.ok || j.lat == null || j.lon == null) return;
-          const latlng = [j.lat, j.lon];
-          if (!map) initMap(latlng);
+          if (!j.ok) return;
+          let latlng;
+          if (!mapMode) {
+            mapMode = (j.frame === 'map') ? 'map' : 'geo';
+          }
+          if (!map) {
+            if (j.frame === 'map' && j.x != null && j.y != null) {
+              initMap([j.y, j.x], 'map');
+              if (!waypointsLoaded) { await loadWaypoints(); waypointsLoaded = true; }
+            } else if (j.lat != null && j.lon != null) {
+              initMap([j.lat, j.lon], 'geo');
+              if (!waypointsLoaded) { await loadWaypoints(); waypointsLoaded = true; }
+            } else {
+              return;
+            }
+          }
+          if (mapMode === 'map' && j.x != null && j.y != null) {
+            latlng = [j.y, j.x];
+          } else if (j.lat != null && j.lon != null) {
+            latlng = [j.lat, j.lon];
+          } else {
+            return;
+          }
           if (!robotMarker) {
-            robotMarker = L.marker(latlng, { title: 'Robot' }).addTo(map);
+            robotMarker = L.marker(latlng, { title: 'Robot', icon: makeRobotIcon(j.yaw_deg || 0) }).addTo(map);
           } else {
             robotMarker.setLatLng(latlng);
+            const el = robotMarker.getElement();
+            if (el) {
+              const w = el.querySelector('.robot-wrap');
+              if (w) w.style.transform = `rotate(${j.yaw_deg || 0}deg)`;
+            } else {
+              robotMarker.setIcon(makeRobotIcon(j.yaw_deg || 0));
+            }
+          }
+          // Also show pose & heading
+          if (mapMode === 'geo' && j.lat != null && j.lon != null) {
+            document.getElementById('poseVal').textContent = `${j.lat.toFixed(6)}, ${j.lon.toFixed(6)}`;
+          } else if (mapMode === 'map' && j.x != null && j.y != null) {
+            document.getElementById('poseVal').textContent = `${j.x.toFixed(2)}, ${j.y.toFixed(2)} (map)`;
+          }
+          document.getElementById('headVal').textContent = `${(j.yaw_deg||0).toFixed(1)}°`;
+        } catch (_) {}
+      }
+
+      async function updatePlan() {
+        try {
+          const resp = await fetch('/api/plan');
+          const j = await resp.json();
+          if (!j.ok) return;
+          let latlngs = [];
+          if (!mapMode && j.frame) mapMode = (j.frame === 'map') ? 'map' : 'geo';
+          if (!map) return; // wait for robot pose to init map mode
+          if (j.frame === 'map') {
+            latlngs = j.points.map(p => [p.y, p.x]);
+          } else {
+            latlngs = j.points.map(p => [p.lat, p.lon]);
+          }
+          if (!planLayer) {
+            planLayer = L.polyline(latlngs, { color: '#7b61ff', weight: 4, opacity: 0.8 }).addTo(map);
+          } else {
+            planLayer.setLatLngs(latlngs);
           }
         } catch (_) {}
       }
 
       async function loadWaypoints() {
-        const resp = await fetch('/api/waypoints');
-        const data = await resp.json();
+        let data = [];
+        try {
+          const resp = await fetch(mapMode === 'map' ? '/api/waypoints_local' : '/api/waypoints');
+          const j = await resp.json();
+          data = Array.isArray(j) ? j : (Array.isArray(j.points) ? j.points : []);
+        } catch (e) {
+          console.error('Failed to load waypoints', e);
+          data = [];
+        }
         const list = document.getElementById('wpList');
         list.innerHTML = '';
         data.forEach(wp => {
@@ -122,7 +230,11 @@
           label.textContent = `${wp.name || wp.id}`;
           const meta = document.createElement('div');
           meta.className = 'meta';
-          meta.textContent = `lat: ${Number(wp.lat).toFixed(6)}, lon: ${Number(wp.lon).toFixed(6)}, yaw: ${Number(wp.yaw_deg || 0).toFixed(1)}°`;
+          if (mapMode === 'map') {
+            meta.textContent = `x: ${Number(wp.x).toFixed(2)}, y: ${Number(wp.y).toFixed(2)}, yaw: ${Number(wp.yaw_rad ? (wp.yaw_rad*180/Math.PI) : (wp.yaw_deg||0)).toFixed(1)}°`;
+          } else {
+            meta.textContent = `lat: ${Number(wp.lat).toFixed(6)}, lon: ${Number(wp.lon).toFixed(6)}, yaw: ${Number(wp.yaw_deg || 0).toFixed(1)}°`;
+          }
           const actions = document.createElement('div');
           actions.className = 'actions';
           const btn = document.createElement('button');
@@ -185,16 +297,13 @@
         const resp = await fetch('/api/status');
         const s = await resp.json();
         const el = document.getElementById('status');
-        const metrics = document.getElementById('metrics');
         el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${s.error ? ` | error: ${s.error}` : ''}`;
         const dist = s.distance_remaining != null ? `${Number(s.distance_remaining).toFixed(2)} m` : '—';
         const eta = s.eta_sec != null ? `${Number(s.eta_sec).toFixed(1)} s` : '—';
         const prog = (s.route_current != null && s.route_total) ? `${s.route_current}/${s.route_total}` : '—';
-        metrics.innerHTML = `
-          <div><strong>Distance:</strong> ${dist}</div>
-          <div><strong>ETA:</strong> ${eta}</div>
-          <div><strong>Route Progress:</strong> ${prog}</div>
-        `;
+        document.getElementById('distVal').textContent = dist;
+        document.getElementById('etaVal').textContent = eta;
+        document.getElementById('progVal').textContent = prog;
       }
 
       document.getElementById('cancelBtn').onclick = async () => {
@@ -206,10 +315,13 @@
 
       setInterval(updateStatus, 1000);
       setInterval(updateRobotMarker, 1000);
-      loadWaypoints();
+      setInterval(updatePlan, 1000);
+      // Waypoints list is drawn after mapMode known; backup timer if pose delays
       loadRoutes();
       updateStatus();
       updateRobotMarker();
+      updatePlan();
+      setTimeout(async () => { if (!waypointsLoaded) { await loadWaypoints(); waypointsLoaded = true; } }, 1500);
     </script>
   </body>
   </html>
