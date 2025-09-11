@@ -195,6 +195,17 @@ class NavCommanderGPS(Node):
         lon = float(lon0) + float(x) / self.gps_ref['m_per_deg_lon']
         return lat, lon
 
+    def _xy_to_latlon_fast(self, x, y):
+        """Fast, non-blocking XY->LL for UI drawing only.
+        Avoids calling /toLL inside high-frequency callbacks like /plan.
+        """
+        lat0 = self.gps_ref.get('lat0'); lon0 = self.gps_ref.get('lon0')
+        if lat0 is None or lon0 is None or self.gps_ref.get('m_per_deg_lat') is None:
+            return 0.0, 0.0
+        lat = float(lat0) + float(y) / self.gps_ref['m_per_deg_lat']
+        lon = float(lon0) + float(x) / self.gps_ref['m_per_deg_lon']
+        return lat, lon
+
     def _dist_m(self, lat1, lon1, lat2, lon2):
         x1, y1 = self._latlon_to_xy(lat1, lon1)
         x2, y2 = self._latlon_to_xy(lat2, lon2)
@@ -573,10 +584,10 @@ class NavCommanderGPS(Node):
         return p
 
     def _plan_cb(self, msg: Path):
-        # Convert nav2 path (map XY) to GPS points for UI
+        # Convert nav2 path (map XY) to GPS points for UI without blocking services
         out = []
         for p in msg.poses:
-            lat, lon = self._xy_to_latlon(p.pose.position.x, p.pose.position.y)
+            lat, lon = self._xy_to_latlon_fast(p.pose.position.x, p.pose.position.y)
             out.append({'lat': lat, 'lon': lon})
         self.nav2_path_gps = out
 
@@ -681,7 +692,20 @@ def resume(): node.resume_mission(); return jsonify({'ok': True})
 def teleop(): data = request.get_json(force=True); node.publish_cmd_vel(float(data.get('linear', {}).get('x', 0.0)), float(data.get('angular', {}).get('z', 0.0))); return jsonify({'ok': True})
 
 
-def ros_spin(): rclpy.spin(node)
+def ros_spin():
+    try:
+        executor = rclpy.executors.MultiThreadedExecutor()
+    except Exception:
+        executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        if HAVE_SIMPLE_NAV and getattr(node, '_navigator', None) is not None:
+            nav_node = getattr(node._navigator, 'node', None) or getattr(node._navigator, '_node', None)
+            if nav_node is not None:
+                executor.add_node(nav_node)
+    except Exception:
+        pass
+    executor.spin()
 
 
 def main():
