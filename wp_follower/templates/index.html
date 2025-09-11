@@ -13,21 +13,28 @@
       </div>
     </header>
 
-    <section>
-      <h2>Waypoints</h2>
-      <div id="wpList" class="list"></div>
-    </section>
-
-    <section>
-      <h2>Routes</h2>
-      <div id="routeList" class="list"></div>
-    </section>
-
-    <section>
-      <h2>Status</h2>
+    <!-- Status at the top -->
+    <section class="status-section">
       <div id="status" class="status">Status: idle</div>
       <div id="metrics" class="metrics"></div>
     </section>
+
+    <!-- Two-column layout with waypoints on the side -->
+    <div class="layout">
+      <aside class="sidebar">
+        <section>
+          <h2>Waypoints</h2>
+          <div id="wpList" class="list"></div>
+        </section>
+      </aside>
+
+      <main class="content">
+        <section>
+          <h2>Routes</h2>
+          <div id="routeList" class="list"></div>
+        </section>
+      </main>
+    </div>
 
     <script>
       async function loadWaypoints() {
@@ -131,4 +138,3 @@
     </script>
   </body>
   </html>
-
