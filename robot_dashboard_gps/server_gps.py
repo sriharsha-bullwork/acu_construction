@@ -84,6 +84,9 @@ class NavCommanderGPS(Node):
             self._through_poses_client = ActionClient(self, NavigateThroughPoses, 'navigate_through_poses')
         self._last_goal_type = None
         self._monitor_thread = None
+        # Local affine calibration for fast XY<->LL conversion (derived from ToLL)
+        self._ll_cal = None  # {'x0':..,'y0':..,'lat0':..,'lon0':..,'J':[[dlat_dx,dlat_dy],[dlon_dx,dlon_dy]], 'J_inv':[[...]], 't':time.time()}
+        self._ll_cal_inflight = False
 
         # Topics
         # Use globally fused odometry; prefer raw GPS fixes for smoother UI movement
@@ -205,6 +208,149 @@ class NavCommanderGPS(Node):
         lat = float(lat0) + float(y) / self.gps_ref['m_per_deg_lat']
         lon = float(lon0) + float(x) / self.gps_ref['m_per_deg_lon']
         return lat, lon
+
+    def _ensure_ll_cal(self):
+        if self._ll_cal_inflight or not HAVE_RL_LL or self._toll_cli is None:
+            return
+        # Calibrate around current map pose for best local accuracy
+        x0 = float(self.pose_map.get('x', 0.0))
+        y0 = float(self.pose_map.get('y', 0.0))
+        step = 10.0  # meters
+        def tol_req(px, py):
+            req = ToLL.Request()
+            try:
+                from geometry_msgs.msg import Point
+                req.map_point = Point(x=float(px), y=float(py), z=0.0)
+            except Exception:
+                try:
+                    req.x = float(px); req.y = float(py); req.z = 0.0
+                except Exception:
+                    pass
+            return req
+        if not self._toll_cli.wait_for_service(timeout_sec=0.2):
+            return
+        self._ll_cal_inflight = True
+        def _cal():
+            try:
+                f0 = self._toll_cli.call_async(tol_req(x0, y0))
+                f1 = self._toll_cli.call_async(tol_req(x0 + step, y0))
+                f2 = self._toll_cli.call_async(tol_req(x0, y0 + step))
+                t0 = time.time()
+                while (not f0.done() or not f1.done() or not f2.done()) and (time.time() - t0) < 2.0:
+                    time.sleep(0.01)
+                if not (f0.done() and f1.done() and f2.done()):
+                    return
+                def res_to_ll(fut):
+                    res = fut.result()
+                    ll = getattr(res, 'll_point', None)
+                    if ll is not None:
+                        return float(ll.x), float(ll.y)
+                    lat = getattr(res, 'latitude', None); lon = getattr(res, 'longitude', None)
+                    if lat is not None and lon is not None:
+                        return float(lat), float(lon)
+                    return None, None
+                lat0, lon0 = res_to_ll(f0)
+                latx, lonx = res_to_ll(f1)
+                laty, lony = res_to_ll(f2)
+                if None in (lat0, lon0, latx, lonx, laty, lony):
+                    return
+                # Compute Jacobian in deg/m
+                dlat_dx = (latx - lat0) / step
+                dlat_dy = (laty - lat0) / step
+                dlon_dx = (lonx - lon0) / step
+                dlon_dy = (lony - lon0) / step
+                det = dlat_dx * dlon_dy - dlat_dy * dlon_dx
+                if abs(det) < 1e-12:
+                    return
+                inv = [[ dlon_dy / det, -dlat_dy / det],
+                       [-dlon_dx / det,  dlat_dx / det]]
+                self._ll_cal = {
+                    'x0': x0, 'y0': y0,
+                    'lat0': lat0, 'lon0': lon0,
+                    'J': [[dlat_dx, dlat_dy], [dlon_dx, dlon_dy]],
+                    'J_inv': inv,
+                    't': time.time()
+                }
+            finally:
+                self._ll_cal_inflight = False
+        threading.Thread(target=_cal, daemon=True).start()
+
+    def _xy_to_latlon_affine(self, x, y):
+        cal = self._ll_cal
+        if cal is None:
+            return self._xy_to_latlon_fast(x, y)
+        dx = float(x) - cal['x0']
+        dy = float(y) - cal['y0']
+        dlat = cal['J'][0][0] * dx + cal['J'][0][1] * dy
+        dlon = cal['J'][1][0] * dx + cal['J'][1][1] * dy
+        return cal['lat0'] + dlat, cal['lon0'] + dlon
+
+    def _latlon_to_xy_affine(self, lat, lon):
+        cal = self._ll_cal
+        if cal is None:
+            return self._latlon_to_xy(float(lat), float(lon))
+        dlat = float(lat) - cal['lat0']
+        dlon = float(lon) - cal['lon0']
+        dx = cal['J_inv'][0][0] * dlat + cal['J_inv'][0][1] * dlon
+        dy = cal['J_inv'][1][0] * dlat + cal['J_inv'][1][1] * dlon
+        return cal['x0'] + dx, cal['y0'] + dy
+
+    def _latlon_to_xy_robust(self, lat, lon):
+        if HAVE_RL_LL and self._fromll_cli is not None and self._fromll_cli.wait_for_service(timeout_sec=0.5):
+            try:
+                req = FromLL.Request()
+                try:
+                    req.latitude = float(lat); req.longitude = float(lon); req.altitude = 0.0
+                except AttributeError:
+                    from geometry_msgs.msg import Point
+                    req.ll_point = Point(x=float(lat), y=float(lon), z=0.0)
+                fut = self._fromll_cli.call_async(req)
+                t0 = time.time()
+                while not fut.done() and (time.time() - t0) < 1.5:
+                    time.sleep(0.01)
+                if fut.done():
+                    res = fut.result()
+                    mp = getattr(res, 'map_point', None)
+                    if mp is not None:
+                        return float(mp.x), float(mp.y)
+                    x = getattr(res, 'x', None); y = getattr(res, 'y', None)
+                    if x is not None and y is not None:
+                        return float(x), float(y)
+            except Exception:
+                pass
+        if self._ll_cal is not None:
+            try:
+                return self._latlon_to_xy_affine(lat, lon)
+            except Exception:
+                pass
+        return self._latlon_to_xy(lat, lon)
+
+    def _latlon_to_xy_strict(self, lat, lon, timeout_sec: float = 1.5):
+        """Strict GPS->map using robot_localization FromLL only. Returns (x,y) or None."""
+        if not (HAVE_RL_LL and self._fromll_cli is not None and self._fromll_cli.wait_for_service(timeout_sec=timeout_sec)):
+            return None
+        try:
+            req = FromLL.Request()
+            try:
+                req.latitude = float(lat); req.longitude = float(lon); req.altitude = 0.0
+            except AttributeError:
+                from geometry_msgs.msg import Point
+                req.ll_point = Point(x=float(lat), y=float(lon), z=0.0)
+            fut = self._fromll_cli.call_async(req)
+            t0 = time.time()
+            while not fut.done() and (time.time() - t0) < timeout_sec:
+                time.sleep(0.01)
+            if fut.done():
+                res = fut.result()
+                mp = getattr(res, 'map_point', None)
+                if mp is not None:
+                    return float(mp.x), float(mp.y)
+                x = getattr(res, 'x', None); y = getattr(res, 'y', None)
+                if x is not None and y is not None:
+                    return float(x), float(y)
+        except Exception:
+            pass
+        return None
 
     def _dist_m(self, lat1, lon1, lat2, lon2):
         x1, y1 = self._latlon_to_xy(lat1, lon1)
@@ -576,20 +722,20 @@ class NavCommanderGPS(Node):
         return False
 
     def _create_pose_stamped_gps(self, pose_dict):
-        # Convert GPS lat/lon to local map XY
-        x, y = self._latlon_to_xy(pose_dict['lat'], pose_dict['lon'])
-        p = PoseStamped(); p.header.frame_id = 'map'; p.pose.position.x = float(x); p.pose.position.y = float(y)
+        # Convert GPS lat/lon to local map XY using strict FromLL for goals
+        xy = self._latlon_to_xy_strict(pose_dict['lat'], pose_dict['lon'])
+        if xy is None:
+            self.log_message(f"FromLL unavailable or failed for goal lat={pose_dict['lat']}, lon={pose_dict['lon']}")
+            return None
+        x, y = xy
+        p = PoseStamped(); p.header.frame_id = os.getenv('WORLD_FRAME', 'map'); p.pose.position.x = float(x); p.pose.position.y = float(y)
         yaw_rad = math.radians(float(pose_dict.get('yaw_deg', 0.0))); o = euler_to_quaternion(0, 0, yaw_rad)
         p.pose.orientation.x, p.pose.orientation.y, p.pose.orientation.z, p.pose.orientation.w = o
         return p
 
     def _plan_cb(self, msg: Path):
-        # Convert nav2 path (map XY) to GPS points for UI without blocking services
-        out = []
-        for p in msg.poses:
-            lat, lon = self._xy_to_latlon_fast(p.pose.position.x, p.pose.position.y)
-            out.append({'lat': lat, 'lon': lon})
-        self.nav2_path_gps = out
+        # Temporarily disable path overlay to focus on marker only
+        self.nav2_path_gps = []
 
     def _rosout_cb(self, msg: Log):
         if msg.name in self.log_node_filter and msg.level >= Log.INFO[0]: self.log_messages.append(f'[{msg.name}] {msg.msg}')
