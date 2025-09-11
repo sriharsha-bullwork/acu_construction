@@ -40,7 +40,7 @@
         <section>
           <h2>Vehicle</h2>
           <div class="vehicle-panel">
-            <canvas id="vehicleCanvas" width="360" height="240"></canvas>
+            <canvas id="vehicleCanvas"></canvas>
           </div>
         </section>
         <section>
@@ -66,19 +66,43 @@
       let odomOrigin = null; // {x, y}
       let odomTrail = [];
       let odomScale = 5; // px per meter
+      let localWps = []; // [{id,name,x,y,yaw_deg}]
+      let lastOdom = null;
 
-      function drawVehicle(odom) {
+      function resizeCanvasForDPR(canvas, ctx) {
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const displayWidth = Math.max(1, Math.round(rect.width));
+        const displayHeight = Math.max(1, Math.round(rect.height));
+        if (canvas.width !== displayWidth * dpr || canvas.height !== displayHeight * dpr) {
+          canvas.width = displayWidth * dpr;
+          canvas.height = displayHeight * dpr;
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return { W: displayWidth, H: displayHeight };
+      }
+
+      function ensureOrigin() {
+        if (odomOrigin) return;
+        if (lastOdom && typeof lastOdom.x === 'number') {
+          odomOrigin = { x: lastOdom.x, y: lastOdom.y };
+          return;
+        }
+        if (Array.isArray(localWps) && localWps.length > 0) {
+          let sx = 0, sy = 0, n = 0;
+          localWps.forEach(w => { const x = Number(w.x), y = Number(w.y); if (isFinite(x) && isFinite(y)) { sx += x; sy += y; n++; } });
+          if (n > 0) { odomOrigin = { x: sx / n, y: sy / n }; return; }
+        }
+        odomOrigin = { x: 0, y: 0 };
+      }
+
+      function redrawCanvas() {
         const canvas = document.getElementById('vehicleCanvas');
-        if (!canvas || !odom) return;
+        if (!canvas) return;
         const ctx = canvas.getContext('2d');
-        const W = canvas.width, H = canvas.height;
+        const { W, H } = resizeCanvasForDPR(canvas, ctx);
         const cx = W / 2, cy = H / 2;
-
-        if (!odomOrigin) odomOrigin = { x: odom.x, y: odom.y };
-
-        // Maintain a short trail
-        odomTrail.push({ x: odom.x, y: odom.y });
-        if (odomTrail.length > 200) odomTrail.shift();
+        ensureOrigin();
 
         const worldToScreen = (pt) => ({
           x: cx + (pt.x - odomOrigin.x) * odomScale,
@@ -96,6 +120,28 @@
         ctx.moveTo(cx, 0); ctx.lineTo(cx, H);
         ctx.stroke();
 
+        // Waypoints and labels
+        if (Array.isArray(localWps) && localWps.length > 0) {
+          ctx.fillStyle = '#059669';
+          ctx.strokeStyle = '#065f46';
+          ctx.lineWidth = 1.5;
+          ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
+          ctx.textBaseline = 'bottom';
+          localWps.forEach(wp => {
+            const p = worldToScreen({ x: Number(wp.x), y: Number(wp.y) });
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          });
+          ctx.fillStyle = '#111827';
+          localWps.forEach(wp => {
+            const p = worldToScreen({ x: Number(wp.x), y: Number(wp.y) });
+            const label = (wp.name || wp.id || '').toString();
+            if (label) ctx.fillText(label, p.x + 8, p.y - 6);
+          });
+        }
+
         // Trail
         if (odomTrail.length > 1) {
           ctx.strokeStyle = '#9ca3af';
@@ -110,20 +156,39 @@
           ctx.stroke();
         }
 
-        // Vehicle marker (triangle)
-        const pos = worldToScreen({ x: odom.x, y: odom.y });
-        const yawRad = (Number(odom.yaw_deg) || 0) * Math.PI / 180;
-        ctx.save();
-        ctx.translate(pos.x, pos.y);
-        ctx.rotate(-yawRad); // invert for canvas y-down
-        ctx.fillStyle = '#2563eb';
-        ctx.beginPath();
-        ctx.moveTo(12, 0);
-        ctx.lineTo(-10, 7);
-        ctx.lineTo(-10, -7);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+        // Vehicle marker
+        if (lastOdom && typeof lastOdom.x === 'number') {
+          const pos = worldToScreen({ x: lastOdom.x, y: lastOdom.y });
+          const yawRad = (Number(lastOdom.yaw_deg) || 0) * Math.PI / 180;
+          ctx.save();
+          ctx.translate(pos.x, pos.y);
+          ctx.rotate(-yawRad);
+          ctx.fillStyle = '#2563eb';
+          ctx.beginPath();
+          ctx.moveTo(12, 0);
+          ctx.lineTo(-10, 7);
+          ctx.lineTo(-10, -7);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
+      function drawVehicle(odom) {
+        if (!odom) return;
+        if (!odomOrigin) odomOrigin = { x: odom.x, y: odom.y };
+        odomTrail.push({ x: odom.x, y: odom.y });
+        if (odomTrail.length > 200) odomTrail.shift();
+        redrawCanvas();
+      }
+
+      async function loadWaypointsLocal() {
+        try {
+          const resp = await fetch('/api/waypoints_local');
+          localWps = await resp.json();
+        } catch (e) {
+          localWps = [];
+        }
       }
       async function loadWaypoints() {
         const resp = await fetch('/api/waypoints');
@@ -300,6 +365,8 @@
           } else {
             await loadWaypoints();
             await loadRoutes();
+            await loadWaypointsLocal();
+            redrawCanvas();
           }
         } catch (err) {
           alert('Invalid JSON');
@@ -331,7 +398,10 @@
 
           // Draw vehicle from odometry if available
           if (t && t.odom && typeof t.odom.x === 'number' && typeof t.odom.y === 'number') {
+            lastOdom = t.odom;
             drawVehicle(t.odom);
+          } else if (lastOdom) {
+            drawVehicle(lastOdom);
           }
         } catch (e) {
           // ignore transient errors
@@ -340,9 +410,13 @@
       setInterval(updateTelemetry, 1000);
       loadWaypoints();
       loadRoutes();
+      loadWaypointsLocal();
       updateStatus();
       applyGoEnabled();
       updateTelemetry();
+      window.addEventListener('resize', () => {
+        if (lastOdom) drawVehicle(lastOdom);
+      });
     </script>
   </body>
   </html>

@@ -44,7 +44,7 @@ button:disabled, .button-like:disabled, .actions button:disabled {
 .empty { color: var(--muted); padding: 8px; }
 
 /* Layout: sidebar for waypoints */
-.layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: start; }
+.layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 .sidebar { position: sticky; top: 12px; align-self: start; }
 .content { min-width: 0; }
 
@@ -52,7 +52,8 @@ button:disabled, .button-like:disabled, .actions button:disabled {
 .status-section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
 
 /* Vehicle panel */
-.vehicle-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: inline-block; }
+.vehicle-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: block; width: 100%; }
+.vehicle-panel canvas { width: 100%; height: 520px; display: block; }
 
 /* Responsive tweaks */
 @media (max-width: 900px) {

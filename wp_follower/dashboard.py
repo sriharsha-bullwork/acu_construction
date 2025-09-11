@@ -89,6 +89,29 @@ class NavBridge:
             for r in self._routes
         ]
 
+    def list_waypoints_local(self) -> List[Dict]:
+        """Return waypoints converted to local map frame coordinates.
+
+        Fields: id, name, x, y, yaw_deg
+        """
+        with self._lock:
+            try:
+                with ROS_SPIN_LOCK:
+                    locals_ = gps_points_to_local(self._helper, self._waypoints)
+                out = []
+                for item in locals_:
+                    out.append({
+                        'id': item.get('id'),
+                        'name': item.get('name'),
+                        'x': float(item['x']),
+                        'y': float(item['y']),
+                        'yaw_deg': float((item.get('yaw_rad') or 0.0) * 180.0 / 3.141592653589793),
+                    })
+                return out
+            except Exception as e:
+                logging.exception('Failed to convert waypoints to local frame: %s', e)
+                return []
+
     def send_goal(self, wp_id: str) -> Dict:
         """Convert and send a Nav2 goal for the waypoint id.
         Returns a short status dict immediately; use poll_status() to monitor.
@@ -593,6 +616,10 @@ def create_app() -> Flask:
     @app.get('/api/routes')
     def api_routes():
         return jsonify(nav.list_routes())
+
+    @app.get('/api/waypoints_local')
+    def api_waypoints_local():
+        return jsonify(nav.list_waypoints_local())
 
     @app.post('/api/route/<route_id>')
     def api_start_route(route_id: str):
