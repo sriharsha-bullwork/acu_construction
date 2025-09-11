@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import logging
+import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -13,7 +14,7 @@ from rclpy.node import Node
 from rclpy.task import Future
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, Imu
 
 # Support running as a script or as a package module
 try:
@@ -494,15 +495,27 @@ def create_app() -> Flask:
     # On-demand telemetry sampling to avoid concurrent rclpy spinning
     _last_gps: Optional[Dict] = None
     _last_gps_ts: Optional[float] = None
+    _last_heading_deg: Optional[float] = None
+    _last_heading_ts: Optional[float] = None
 
-    def _sample_gps_once(timeout_sec: float = 0.25) -> Optional[Dict]:
-        nonlocal _last_gps, _last_gps_ts
+    def _quat_to_yaw_deg(x: float, y: float, z: float, w: float) -> float:
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        deg = math.degrees(yaw)
+        if deg < 0:
+            deg += 360.0
+        return deg
+
+    def _sample_telem_once(timeout_sec: float = 0.25) -> Tuple[Optional[Dict], Optional[float]]:
+        nonlocal _last_gps, _last_gps_ts, _last_heading_deg, _last_heading_ts
         try:
             node = Node('wp_dashboard_telemetry_once')
-            done = Future()
+            got_gps = Future()
+            got_imu = Future()
             data: Dict = {}
 
-            def cb(msg: NavSatFix):
+            def gps_cb(msg: NavSatFix):
                 data['gps'] = {
                     'lat': float(msg.latitude),
                     'lon': float(msg.longitude),
@@ -510,20 +523,35 @@ def create_app() -> Flask:
                     'status': getattr(getattr(msg, 'status', None), 'status', None),
                     'service': getattr(getattr(msg, 'status', None), 'service', None),
                 }
-                if not done.done():
-                    done.set_result(True)
+                if not got_gps.done():
+                    got_gps.set_result(True)
 
-            node.create_subscription(NavSatFix, '/gps/fix', cb, 10)
+            def imu_cb(msg: Imu):
+                q = msg.orientation
+                try:
+                    hdg = _quat_to_yaw_deg(float(q.x), float(q.y), float(q.z), float(q.w))
+                    data['heading_deg'] = hdg
+                except Exception:
+                    pass
+                if not got_imu.done():
+                    got_imu.set_result(True)
+
+            node.create_subscription(NavSatFix, '/gps/fix', gps_cb, 10)
+            node.create_subscription(Imu, '/imu', imu_cb, 10)
             with ROS_SPIN_LOCK:
-                rclpy.spin_until_future_complete(node, done, timeout_sec=timeout_sec)
+                rclpy.spin_until_future_complete(node, got_gps, timeout_sec=timeout_sec)
+                rclpy.spin_until_future_complete(node, got_imu, timeout_sec=timeout_sec)
             node.destroy_node()
-            if done.done() and 'gps' in data:
+            now = time.time()
+            if got_gps.done() and 'gps' in data:
                 _last_gps = data['gps']
-                _last_gps_ts = time.time()
-                return _last_gps
-            return _last_gps
+                _last_gps_ts = now
+            if got_imu.done() and 'heading_deg' in data:
+                _last_heading_deg = float(data['heading_deg'])
+                _last_heading_ts = now
+            return _last_gps, _last_heading_deg
         except Exception:
-            return _last_gps
+            return _last_gps, _last_heading_deg
 
     @app.get('/')
     def index() -> Response:
@@ -563,8 +591,8 @@ def create_app() -> Flask:
 
     @app.get('/api/telemetry')
     def api_telemetry():
-        gps = _sample_gps_once()
-        return jsonify({'gps': gps})
+        gps, heading = _sample_telem_once()
+        return jsonify({'gps': gps, 'heading_deg': heading})
 
     # Mission endpoints
     @app.post('/api/mission/start')

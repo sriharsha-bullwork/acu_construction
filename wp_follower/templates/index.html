@@ -246,14 +246,17 @@
           const gps = t && t.gps ? t.gps : null;
           const el = document.getElementById('gps');
           if (!gps) {
-            el.innerHTML = '<div><strong>GPS:</strong> —</div>';
+            const heading = (t && typeof t.heading_deg === 'number') ? `${Number(t.heading_deg).toFixed(1)}°` : '—';
+            el.innerHTML = `<div><strong>GPS:</strong> —</div><div><strong>Heading:</strong> ${heading}</div>`;
             return;
           }
           const latStr = Number(gps.lat).toFixed(6);
           const lonStr = Number(gps.lon).toFixed(6);
+          const heading = (t && typeof t.heading_deg === 'number') ? `${Number(t.heading_deg).toFixed(1)}°` : '—';
           el.innerHTML = `
             <div><strong>Lat:</strong> ${latStr}</div>
             <div><strong>Lon:</strong> ${lonStr}</div>
+            <div><strong>Heading:</strong> ${heading}</div>
           `;
         } catch (e) {
           // ignore transient errors
