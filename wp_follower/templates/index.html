@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Waypoint Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Waypoint Dashboard</h1>
+      <div class="controls">
+        <button id="cancelBtn" title="Cancel current task">Cancel</button>
+      </div>
+    </header>
+
+    <section>
+      <h2>Waypoints</h2>
+      <div id="wpList" class="list"></div>
+    </section>
+
+    <section>
+      <h2>Routes</h2>
+      <div id="routeList" class="list"></div>
+    </section>
+
+    <section>
+      <h2>Status</h2>
+      <div id="status" class="status">Status: idle</div>
+      <div id="metrics" class="metrics"></div>
+    </section>
+
+    <script>
+      async function loadWaypoints() {
+        const resp = await fetch('/api/waypoints');
+        const data = await resp.json();
+        const list = document.getElementById('wpList');
+        list.innerHTML = '';
+        data.forEach(wp => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          const label = document.createElement('div');
+          label.className = 'label';
+          label.textContent = `${wp.name || wp.id}`;
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          meta.textContent = `lat: ${Number(wp.lat).toFixed(6)}, lon: ${Number(wp.lon).toFixed(6)}, yaw: ${Number(wp.yaw_deg || 0).toFixed(1)}°`;
+          const actions = document.createElement('div');
+          actions.className = 'actions';
+          const btn = document.createElement('button');
+          btn.textContent = 'Go';
+          btn.onclick = async () => {
+            const r = await fetch(`/api/goal/${wp.id}`, { method: 'POST' });
+            const j = await r.json();
+            if (!j.ok) alert(j.error || 'Failed to send goal');
+            await updateStatus();
+          };
+          actions.appendChild(btn);
+          row.appendChild(label);
+          row.appendChild(meta);
+          row.appendChild(actions);
+          list.appendChild(row);
+        });
+      }
+
+      async function loadRoutes() {
+        const resp = await fetch('/api/routes');
+        const data = await resp.json();
+        const list = document.getElementById('routeList');
+        list.innerHTML = '';
+        if (!Array.isArray(data) || data.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = 'No routes available in JSON';
+          list.appendChild(empty);
+          return;
+        }
+        data.forEach(rt => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          const label = document.createElement('div');
+          label.className = 'label';
+          label.textContent = `${rt.id}`;
+          const meta = document.createElement('div');
+          meta.className = 'meta';
+          meta.textContent = `waypoints: ${rt.size}`;
+          const actions = document.createElement('div');
+          actions.className = 'actions';
+          const btn = document.createElement('button');
+          btn.textContent = 'Start';
+          btn.onclick = async () => {
+            const r = await fetch(`/api/route/${rt.id}`, { method: 'POST' });
+            const j = await r.json();
+            if (!j.ok) alert(j.error || 'Failed to start route');
+            await updateStatus();
+          };
+          actions.appendChild(btn);
+          row.appendChild(label);
+          row.appendChild(meta);
+          row.appendChild(actions);
+          list.appendChild(row);
+        });
+      }
+
+      async function updateStatus() {
+        const resp = await fetch('/api/status');
+        const s = await resp.json();
+        const el = document.getElementById('status');
+        const metrics = document.getElementById('metrics');
+        el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${s.error ? ` | error: ${s.error}` : ''}`;
+        const dist = s.distance_remaining != null ? `${Number(s.distance_remaining).toFixed(2)} m` : '—';
+        const eta = s.eta_sec != null ? `${Number(s.eta_sec).toFixed(1)} s` : '—';
+        const prog = (s.route_current != null && s.route_total) ? `${s.route_current}/${s.route_total}` : '—';
+        metrics.innerHTML = `
+          <div><strong>Distance:</strong> ${dist}</div>
+          <div><strong>ETA:</strong> ${eta}</div>
+          <div><strong>Route Progress:</strong> ${prog}</div>
+        `;
+      }
+
+      document.getElementById('cancelBtn').onclick = async () => {
+        const r = await fetch('/api/cancel', { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Failed to cancel');
+        await updateStatus();
+      };
+
+      setInterval(updateStatus, 1000);
+      loadWaypoints();
+      loadRoutes();
+      updateStatus();
+    </script>
+  </body>
+  </html>
+

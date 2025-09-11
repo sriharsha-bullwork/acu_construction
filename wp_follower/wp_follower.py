@@ -3,6 +3,7 @@ import time
 import math
 import yaml
 from pathlib import Path
+from typing import Dict, List, Union
 
 import rclpy
 from rclpy.node import Node
@@ -13,7 +14,7 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
 DEFAULT_WP_FILE = \
-    "/workspaces/Simulation_ACU/src/acu_construction/logged_waypoint/demo_wp.yaml"
+    "/workspaces/wayfinders/src/acu_construction/wp_follower/demo_wp.yaml"
 
 
 def yaw_to_quaternion(yaw_rad: float):
@@ -50,6 +51,55 @@ def ll_to_map_xy(node: Node, latitude: float, longitude: float, altitude: float 
         raise RuntimeError(f"/fromLL service call failed: {future.exception()}")
     resp = future.result()
     return resp.map_point.x, resp.map_point.y
+
+
+def gps_point_to_local(
+    node: Node,
+    point: Dict,
+) -> Dict:
+    """Convert a single GPS waypoint dict to local map coordinates.
+
+    Input keys expected (JSON schema):
+      - 'lat': latitude in degrees
+      - 'lon': longitude in degrees
+      - 'yaw_deg': yaw in degrees (optional; defaults to 0)
+      - passthrough keys: 'id', 'name'
+
+    Returns a dict with:
+      - 'id', 'name' (if present in input)
+      - 'x', 'y' (map coordinates)
+      - 'yaw_rad' (heading in radians)
+    """
+    if point is None or not isinstance(point, dict):
+        raise ValueError('point must be a dict with lat/lon[/yaw_deg]')
+
+    if 'lat' not in point or 'lon' not in point:
+        raise ValueError('point missing required keys: lat, lon')
+
+    lat = float(point['lat'])
+    lon = float(point['lon'])
+    yaw_deg = float(point.get('yaw_deg', 0.0))
+
+    x, y = ll_to_map_xy(node, lat, lon, altitude=0.0)
+    yaw_rad = math.radians(yaw_deg)
+
+    out = {
+        'x': x,
+        'y': y,
+        'yaw_rad': yaw_rad,
+    }
+    # Pass through identifiers if present
+    for k in ('id', 'name'):
+        if k in point:
+            out[k] = point[k]
+    return out
+
+
+def gps_points_to_local(node: Node, points: List[Dict]) -> List[Dict]:
+    """Batch convert a list of JSON-format GPS waypoints to local map coordinates."""
+    if points is None or not isinstance(points, list):
+        raise ValueError('points must be a list of dicts')
+    return [gps_point_to_local(node, p) for p in points]
 
 
 def build_goal_pose(navigator: BasicNavigator, x: float, y: float, yaw_rad: float) -> PoseStamped:
