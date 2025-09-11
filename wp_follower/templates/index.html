@@ -9,6 +9,11 @@
     <header>
       <h1>Waypoint Dashboard</h1>
       <div class="controls">
+        <button id="missionStartBtn" title="Start mission over all waypoints">Start Mission</button>
+        <button id="missionStopBtn" title="Stop mission and reset">Stop Mission</button>
+        <button id="exportBtn" title="Export waypoints/routes">Export</button>
+        <label for="importFile" class="button-like" title="Import waypoints/routes">Import</label>
+        <input type="file" id="importFile" accept="application/json,.json" style="display:none" />
         <button id="pauseBtn" title="Pause current task">Pause</button>
         <button id="resumeBtn" title="Resume paused task">Resume</button>
         <button id="cancelBtn" title="Cancel current task">Cancel</button>
@@ -40,6 +45,16 @@
     </div>
 
     <script>
+      // Only enable Go buttons while mission mode is active
+      let missionMode = false;
+      function applyGoEnabled() {
+        const enabled = !!missionMode;
+        document.querySelectorAll('.go-btn').forEach(btn => {
+          btn.disabled = !enabled;
+          if (!enabled) btn.title = 'Start Mission to enable manual goals';
+          else btn.title = 'Send goal to this waypoint';
+        });
+      }
       async function loadWaypoints() {
         const resp = await fetch('/api/waypoints');
         const data = await resp.json();
@@ -57,6 +72,7 @@
           const actions = document.createElement('div');
           actions.className = 'actions';
           const btn = document.createElement('button');
+          btn.className = 'go-btn';
           btn.textContent = 'Go';
           btn.onclick = async () => {
             const r = await fetch(`/api/goal/${wp.id}`, { method: 'POST' });
@@ -64,12 +80,16 @@
             if (!j.ok) alert(j.error || 'Failed to send goal');
             await updateStatus();
           };
+          // Disabled until mission mode is enabled
+          btn.disabled = !missionMode;
+          btn.title = missionMode ? 'Send goal to this waypoint' : 'Start Mission to enable manual goals';
           actions.appendChild(btn);
           row.appendChild(label);
           row.appendChild(meta);
           row.appendChild(actions);
           list.appendChild(row);
         });
+        applyGoEnabled();
       }
 
       async function loadRoutes() {
@@ -125,6 +145,11 @@
           <div><strong>ETA:</strong> ${eta}</div>
           <div><strong>Route Progress:</strong> ${prog}</div>
         `;
+
+        // Enable/disable Go buttons based on mission mode
+        const prev = missionMode;
+        missionMode = (s.mode === 'mission');
+        if (prev !== missionMode) applyGoEnabled();
       }
 
       document.getElementById('cancelBtn').onclick = async () => {
@@ -147,6 +172,62 @@
         if (!j.ok) alert(j.error || 'Failed to resume');
         await updateStatus();
       };
+
+      document.getElementById('missionStartBtn').onclick = async () => {
+        const r = await fetch('/api/mission/start', { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Failed to start mission');
+        await updateStatus();
+      };
+
+      document.getElementById('missionStopBtn').onclick = async () => {
+        const r = await fetch('/api/mission/stop', { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Failed to stop mission');
+        await updateStatus();
+      };
+
+      document.getElementById('exportBtn').onclick = async () => {
+        try {
+          const resp = await fetch('/api/export');
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'waypoints.json';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          alert('Export failed');
+        }
+      };
+
+      document.getElementById('importFile').addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          const r = await fetch('/api/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+          });
+          const j = await r.json();
+          if (!j.ok) {
+            alert(j.error || 'Import failed');
+          } else {
+            await loadWaypoints();
+            await loadRoutes();
+          }
+        } catch (err) {
+          alert('Invalid JSON');
+        } finally {
+          e.target.value = '';
+        }
+      });
 
       setInterval(updateStatus, 1000);
       async function updateTelemetry() {
@@ -173,6 +254,7 @@
       loadWaypoints();
       loadRoutes();
       updateStatus();
+      applyGoEnabled();
       updateTelemetry();
     </script>
   </body>

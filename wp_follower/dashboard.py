@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from flask import Flask, jsonify, request, Response, render_template
+from flask import Flask, jsonify, request, Response, render_template, make_response
 
 import rclpy
 from rclpy.node import Node
@@ -55,6 +55,8 @@ class NavBridge:
         self._route_current: Optional[int] = None
         # Pause/Resume support
         self._paused: Optional[Dict] = None  # {'mode': 'single'|'route', ...}
+        # Mission flag
+        self._mission_active: bool = False
 
     def list_waypoints(self) -> List[Dict]:
         # Return presentation-friendly fields
@@ -104,7 +106,8 @@ class NavBridge:
                 self._last_goal_id = wp_id
                 self._status = 'active'
                 self._last_error = None
-                self._mode = 'single'
+                # If mission is active, keep mode as 'mission' so UI stays enabled
+                self._mode = 'mission' if getattr(self, '_mission_active', False) else 'single'
                 self._route_id = None
                 self._route_total = 0
                 self._route_current = None
@@ -148,6 +151,83 @@ class NavBridge:
                 self._status = 'error'
                 self._last_error = str(e)
                 return {'ok': False, 'error': str(e)}
+
+    def start_mission(self) -> Dict:
+        """Enable mission mode (manual waypoint selection only)."""
+        with self._lock:
+            if self._status == 'active':
+                return {'ok': False, 'error': 'a task is already active'}
+            if not self._waypoints:
+                return {'ok': False, 'error': 'no waypoints loaded'}
+            # Do not send any goals automatically; just enable mission mode
+            self._mission_active = True
+            self._last_goal_id = None
+            self._last_error = None
+            self._mode = 'mission'
+            self._route_id = None
+            self._route_total = 0
+            self._route_current = None
+            # Keep status idle; movement occurs when user clicks a waypoint
+            return {'ok': True, 'status': self._status, 'mode': self._mode}
+
+    def stop_mission(self) -> Dict:
+        """Stop any running mission and reset dashboard to normal."""
+        with self._lock:
+            try:
+                with ROS_SPIN_LOCK:
+                    self._navigator.cancelTask()
+                self._mission_active = False
+                self._paused = None
+                self._last_goal_id = None
+                self._mode = 'none'
+                self._route_id = None
+                self._route_total = 0
+                self._route_current = None
+                self._status = 'idle'
+                self._last_error = None
+                return {'ok': True, 'status': self._status}
+            except Exception as e:
+                self._status = 'error'
+                self._last_error = str(e)
+                return {'ok': False, 'error': str(e)}
+
+    def export_data(self) -> Dict:
+        """Return current waypoints and routes as a dict."""
+        with self._lock:
+            return {
+                'waypoints': list(self._waypoints),
+                'routes': list(self._routes),
+            }
+
+    def import_data(self, data: Dict) -> Dict:
+        """Replace waypoints/routes with the provided JSON if valid.
+
+        Only allowed when no active task is running.
+        """
+        with self._lock:
+            if self._status == 'active':
+                return {'ok': False, 'error': 'cannot import while a task is active'}
+            if not isinstance(data, dict):
+                return {'ok': False, 'error': 'invalid JSON'}
+            wps = data.get('waypoints')
+            if not isinstance(wps, list) or not wps:
+                return {'ok': False, 'error': "JSON must contain a non-empty 'waypoints' list"}
+            routes_raw = data.get('routes', [])
+            routes: List[Dict] = []
+            if isinstance(routes_raw, dict):
+                for rid, arr in routes_raw.items():
+                    if isinstance(arr, list):
+                        routes.append({'id': rid, 'waypoint_ids': list(arr)})
+            elif isinstance(routes_raw, list):
+                for item in routes_raw:
+                    if isinstance(item, dict) and 'id' in item:
+                        ids = item.get('waypoints') or item.get('waypoint_ids') or []
+                        if isinstance(ids, list):
+                            routes.append({'id': item['id'], 'waypoint_ids': list(ids)})
+            # Update
+            self._waypoints = list(wps)
+            self._routes = routes
+            return {'ok': True}
 
     def cancel(self) -> Dict:
         with self._lock:
@@ -480,6 +560,36 @@ def create_app() -> Flask:
     def api_telemetry():
         gps = _sample_gps_once()
         return jsonify({'gps': gps})
+
+    # Mission endpoints
+    @app.post('/api/mission/start')
+    def api_mission_start():
+        return jsonify(nav.start_mission())
+
+    @app.post('/api/mission/stop')
+    def api_mission_stop():
+        return jsonify(nav.stop_mission())
+
+    # Export/Import endpoints
+    @app.get('/api/export')
+    def api_export():
+        data = nav.export_data()
+        resp = make_response(json.dumps(data, indent=2))
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Content-Disposition'] = 'attachment; filename=waypoints.json'
+        return resp
+
+    @app.post('/api/import')
+    def api_import():
+        try:
+            payload = request.get_json(silent=True)
+            if payload is None and request.data:
+                payload = json.loads(request.data.decode('utf-8'))
+        except Exception:
+            payload = None
+        if payload is None:
+            return jsonify({'ok': False, 'error': 'invalid JSON'}), 400
+        return jsonify(nav.import_data(payload))
 
     return app
 
