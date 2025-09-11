@@ -9,7 +9,7 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import PoseStamped
-from robot_localization.srv import FromLL
+from robot_localization.srv import FromLL, ToLL
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
@@ -51,6 +51,24 @@ def ll_to_map_xy(node: Node, latitude: float, longitude: float, altitude: float 
         raise RuntimeError(f"/fromLL service call failed: {future.exception()}")
     resp = future.result()
     return resp.map_point.x, resp.map_point.y
+
+
+def map_xy_to_ll(node: Node, x: float, y: float, altitude: float = 0.0):
+    client = node.create_client(ToLL, '/toLL')
+    while not client.wait_for_service(timeout_sec=1.0):
+        node.get_logger().info('Waiting for /toLL service...')
+
+    req = ToLL.Request()
+    req.map_point.x = float(x)
+    req.map_point.y = float(y)
+    req.map_point.z = float(altitude)
+
+    future = client.call_async(req)
+    rclpy.spin_until_future_complete(node, future)
+    if future.result() is None:
+        raise RuntimeError(f"/toLL service call failed: {future.exception()}")
+    resp = future.result()
+    return resp.ll_point.latitude, resp.ll_point.longitude, resp.ll_point.altitude
 
 
 def gps_point_to_local(

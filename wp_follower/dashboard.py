@@ -15,9 +15,19 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 # Support running as a script or as a package module
 try:
-    from .wp_follower import gps_point_to_local, gps_points_to_local, build_goal_pose
+    from .wp_follower import (
+        gps_point_to_local,
+        gps_points_to_local,
+        build_goal_pose,
+        map_xy_to_ll,
+    )
 except ImportError:  # pragma: no cover - fallback for direct script runs
-    from wp_follower import gps_point_to_local, gps_points_to_local, build_goal_pose
+    from wp_follower import (
+        gps_point_to_local,
+        gps_points_to_local,
+        build_goal_pose,
+        map_xy_to_ll,
+    )
 
 
 DEFAULT_JSON_PATH = (Path(__file__).parent / 'demo_wp.json')
@@ -151,6 +161,31 @@ class NavBridge:
                 self._status = 'error'
                 self._last_error = str(e)
                 return {'ok': False, 'error': str(e)}
+
+    def current_pose_ll(self) -> Dict:
+        """Return robot current pose as lat/lon if available."""
+        try:
+            pose = self._navigator.getCurrentPose()
+            if pose is None:
+                return {'ok': False, 'error': 'no pose'}
+            x = float(pose.pose.position.x)
+            y = float(pose.pose.position.y)
+            lat, lon, _alt = map_xy_to_ll(self._helper, x, y, 0.0)
+            # Compute yaw (radians) from quaternion
+            q = pose.pose.orientation
+            # yaw = atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z)), but roll/pitch ~ 0 here
+            import math
+            siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            yaw = math.atan2(siny_cosp, cosy_cosp)
+            return {
+                'ok': True,
+                'lat': float(lat),
+                'lon': float(lon),
+                'yaw_deg': float(yaw * 180.0 / 3.141592653589793),
+            }
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
 
     def poll_status(self) -> Dict:
         """Check and return the current goal status without blocking."""
@@ -306,6 +341,10 @@ def create_app() -> Flask:
     @app.post('/api/cancel')
     def api_cancel():
         return jsonify(nav.cancel())
+
+    @app.get('/api/robot_pose')
+    def api_robot_pose():
+        return jsonify(nav.current_pose_ll())
 
     return app
 

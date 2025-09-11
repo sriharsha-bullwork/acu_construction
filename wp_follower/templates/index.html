@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <title>Waypoint Dashboard</title>
     <link rel="stylesheet" href="/static/style.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
   </head>
   <body>
     <header>
@@ -24,12 +30,85 @@
     </section>
 
     <section>
+      <h2>Map</h2>
+      <div id="map" class="map"></div>
+    </section>
+
+    <section>
       <h2>Status</h2>
       <div id="status" class="status">Status: idle</div>
       <div id="metrics" class="metrics"></div>
     </section>
 
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
     <script>
+      let map, wpLayer, robotMarker;
+
+      function initMap(center) {
+        if (map) return;
+        map = L.map('map');
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+        wpLayer = L.layerGroup().addTo(map);
+        map.setView(center || [0,0], 18);
+      }
+
+      function colorForWaypoint(wp) {
+        const name = (wp.name || '').toLowerCase();
+        if (name === 'start') return '#22aa22';
+        if (name === 'end' || name === 'goal') return '#c62828';
+        if (/^\d+$/.test(name)) return '#ff8f00';
+        if (name.includes('gen')) return '#1976d2';
+        return '#5555aa';
+      }
+
+      function drawWaypointsOnMap(waypoints) {
+        if (!map) initMap(waypoints.length ? [waypoints[0].lat, waypoints[0].lon] : [0,0]);
+        wpLayer.clearLayers();
+        const bounds = [];
+        waypoints.forEach(wp => {
+          const color = colorForWaypoint(wp);
+          const m = L.circleMarker([wp.lat, wp.lon], {
+            radius: 7,
+            color,
+            weight: 2,
+            fillColor: color,
+            fillOpacity: 0.3,
+          })
+          .bindPopup(`${wp.name || wp.id}`)
+          .on('click', async () => {
+            const r = await fetch(`/api/goal/${wp.id}`, { method: 'POST' });
+            const j = await r.json();
+            if (!j.ok) alert(j.error || 'Failed to send goal');
+            await updateStatus();
+          })
+          .addTo(wpLayer);
+          bounds.push([wp.lat, wp.lon]);
+        });
+        if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
+      }
+
+      async function updateRobotMarker() {
+        try {
+          const resp = await fetch('/api/robot_pose');
+          const j = await resp.json();
+          if (!j.ok || j.lat == null || j.lon == null) return;
+          const latlng = [j.lat, j.lon];
+          if (!map) initMap(latlng);
+          if (!robotMarker) {
+            robotMarker = L.marker(latlng, { title: 'Robot' }).addTo(map);
+          } else {
+            robotMarker.setLatLng(latlng);
+          }
+        } catch (_) {}
+      }
+
       async function loadWaypoints() {
         const resp = await fetch('/api/waypoints');
         const data = await resp.json();
@@ -60,6 +139,7 @@
           row.appendChild(actions);
           list.appendChild(row);
         });
+        drawWaypointsOnMap(data);
       }
 
       async function loadRoutes() {
@@ -125,10 +205,11 @@
       };
 
       setInterval(updateStatus, 1000);
+      setInterval(updateRobotMarker, 1000);
       loadWaypoints();
       loadRoutes();
       updateStatus();
+      updateRobotMarker();
     </script>
   </body>
   </html>
-

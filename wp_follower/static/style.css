@@ -1,10 +1,11 @@
 :root {
-  --bg: #0f1115;
-  --panel: #151822;
-  --muted: #8892a6;
-  --text: #e6edf3;
-  --accent: #4aa8ff;
-  --accent2: #7ee787;
+  --bg: #ffffff;
+  --panel: #f5f7fb;
+  --muted: #4a5568;
+  --text: #1a202c;
+  --accent: #2b6cb0;
+  --accent2: #38a169;
+  --border: #e2e8f0;
 }
 
 * { box-sizing: border-box; }
@@ -20,13 +21,13 @@ h1 { margin: 0; font-size: 20px; }
 h2 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
 
 .controls button, .actions button, button {
-  background: var(--accent); color: #06111d; border: none; border-radius: 6px;
+  background: var(--accent); color: #ffffff; border: none; border-radius: 6px;
   padding: 6px 10px; cursor: pointer; font-weight: 600;
 }
 .controls button:hover, .actions button:hover { filter: brightness(1.05); }
 
-.list { background: var(--panel); border-radius: 8px; padding: 8px; }
-.row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.list { background: var(--panel); border-radius: 8px; padding: 8px; border: 1px solid var(--border); }
+.row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; padding: 8px; border-bottom: 1px solid var(--border); }
 .row:last-child { border-bottom: none; }
 .label { font-weight: 600; }
 .meta { color: var(--muted); font-size: 12px; }
@@ -36,3 +37,4 @@ h2 { font-size: 16px; margin: 24px 0 8px; color: var(--accent); }
 .metrics { display: flex; gap: 16px; margin-top: 6px; color: var(--muted); }
 .empty { color: var(--muted); padding: 8px; }
 
+.map { height: 360px; border-radius: 8px; border: 1px solid var(--border); }
