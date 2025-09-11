@@ -16,7 +16,7 @@ from rclpy.task import Future
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from sensor_msgs.msg import NavSatFix, Imu
 from nav_msgs.msg import Odometry
-from nav_msgs.msg import Path
+from nav_msgs.msg import Path as NavPath
 
 # Support running as a script or as a package module
 try:
@@ -536,7 +536,7 @@ def create_app() -> Flask:
             deg += 360.0
         return deg
 
-    def _sample_telem_once(timeout_sec: float = 0.25) -> Tuple[Optional[Dict], Optional[float], Optional[Dict], Optional[Dict]]:
+    def _sample_telem_once(timeout_sec: float = 0.5) -> Tuple[Optional[Dict], Optional[float], Optional[Dict], Optional[Dict]]:
         nonlocal _last_gps, _last_gps_ts, _last_heading_deg, _last_heading_ts, _last_odom, _last_odom_ts, _last_plan, _last_plan_ts
         try:
             node = Node('wp_dashboard_telemetry_once')
@@ -582,7 +582,7 @@ def create_app() -> Flask:
             node.create_subscription(NavSatFix, '/gps/fix', gps_cb, 10)
             node.create_subscription(Imu, '/imu', imu_cb, 10)
             node.create_subscription(Odometry, '/odometry/global', odom_cb, 10)
-            def plan_cb(msg: Path):
+            def plan_cb(msg: NavPath):
                 try:
                     pts = []
                     for ps in list(msg.poses)[:2000]:
@@ -592,7 +592,7 @@ def create_app() -> Flask:
                     pass
                 if not got_plan.done():
                     got_plan.set_result(True)
-            node.create_subscription(Path, '/plan', plan_cb, 10)
+            node.create_subscription(NavPath, '/plan', plan_cb, 10)
             with ROS_SPIN_LOCK:
                 rclpy.spin_until_future_complete(node, got_gps, timeout_sec=timeout_sec)
                 rclpy.spin_until_future_complete(node, got_imu, timeout_sec=timeout_sec)
