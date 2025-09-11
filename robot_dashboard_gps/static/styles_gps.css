@@ -16,6 +16,8 @@ main { display:grid;grid-template-columns:1fr 400px;gap:16px;padding:16px; }
 section { background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px; }
 .canvas-wrap { position:relative; }
 #map { width:100%;height:auto;display:block;border-radius:6px;background:#f1f3f5;cursor:crosshair; }
+.map-controls { position:absolute; top:10px; left:10px; display:flex; gap:6px; background:rgba(255,255,255,0.9); padding:6px; border:1px solid var(--line); border-radius:6px; }
+.map-controls button { width:36px; height:28px; padding:0; font-weight:700; }
 .buttons { display:flex;flex-wrap:wrap;gap:8px; margin-top: 8px; }
 button { border:1px solid var(--line);background:#fff;color:var(--text);padding:6px 10px;border-radius:6px;cursor:pointer; }
 button:hover { border-color:#c7c9cc; }
@@ -37,4 +39,3 @@ td button { padding: 2px 6px; font-size: 12px; }
 .console-box { background:#24292e;color:#f6f8fa;border-radius:6px;padding:8px;height:250px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.5; }
 .hidden { display: none !important; }
 #joystick-container { position: absolute; bottom: 20px; right: 20px; width: 140px; height: 140px; background: rgba(255, 255, 255, 0.2); border-radius: 50%; }
-

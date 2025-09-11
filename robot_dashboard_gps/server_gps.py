@@ -19,6 +19,11 @@ from nav_msgs.msg import Odometry, Path
 from rcl_interfaces.msg import Log
 from sensor_msgs.msg import NavSatFix, Imu
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
+try:
+    from robot_localization.srv import FromLL, ToLL
+    HAVE_RL_LL = True
+except Exception:
+    HAVE_RL_LL = False
 
 try:
     from nav2_simple_commander.basic_navigator import BasicNavigator
@@ -81,9 +86,9 @@ class NavCommanderGPS(Node):
         self._monitor_thread = None
 
         # Topics
-        # Use globally fused odometry and filtered GPS by default
+        # Use globally fused odometry; prefer raw GPS fixes for smoother UI movement
         odom_topic = os.getenv('ODOM_TOPIC', '/odometry/filtered/global')
-        gps_topic = os.getenv('GPS_TOPIC', '/gps/filtered')
+        gps_topic = os.getenv('GPS_TOPIC', '/gps/fix')
         imu_topic = os.getenv('IMU_TOPIC', '/imu')
         # Subscribe with Best Effort and Reliable for compatibility
         self.create_subscription(Odometry, odom_topic, self._odom_cb, qos_profile_sensor_data)
@@ -94,6 +99,10 @@ class NavCommanderGPS(Node):
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('GPS Dashboard node started and ready.')
         self._has_imu = False
+        self._has_gps = False
+        # robot_localization conversion services (optional but preferred)
+        self._fromll_cli = self.create_client(FromLL, '/fromLL') if HAVE_RL_LL else None
+        self._toll_cli = self.create_client(ToLL, '/toLL') if HAVE_RL_LL else None
 
     def _env_float(self, key):
         try:
@@ -115,6 +124,31 @@ class NavCommanderGPS(Node):
         self.gps_ref['m_per_deg_lon'] = m_per_deg_lon
 
     def _latlon_to_xy(self, lat, lon):
+        # Prefer robot_localization service for consistent conversion across restarts
+        if HAVE_RL_LL and self._fromll_cli is not None and self._fromll_cli.wait_for_service(timeout_sec=0.05):
+            try:
+                req = FromLL.Request()
+                # Support both interface variants
+                try:
+                    req.latitude = float(lat); req.longitude = float(lon); req.altitude = 0.0
+                except AttributeError:
+                    from geometry_msgs.msg import Point
+                    req.ll_point = Point(x=float(lat), y=float(lon), z=0.0)
+                fut = self._fromll_cli.call_async(req)
+                t0 = time.time()
+                while not fut.done() and (time.time() - t0) < 1.0:
+                    time.sleep(0.01)
+                if fut.done():
+                    res = fut.result()
+                    mp = getattr(res, 'map_point', None)
+                    if mp is not None:
+                        return float(mp.x), float(mp.y)
+                    x = getattr(res, 'x', None); y = getattr(res, 'y', None)
+                    if x is not None and y is not None:
+                        return float(x), float(y)
+            except Exception:
+                pass
+        # Fallback: local tangent-plane approximation
         lat0 = self.gps_ref.get('lat0'); lon0 = self.gps_ref.get('lon0')
         if lat0 is None or lon0 is None or self.gps_ref.get('m_per_deg_lat') is None:
             return 0.0, 0.0
@@ -123,6 +157,35 @@ class NavCommanderGPS(Node):
         return dx, dy
 
     def _xy_to_latlon(self, x, y):
+        # Prefer robot_localization service for consistent conversion across restarts
+        if HAVE_RL_LL and self._toll_cli is not None and self._toll_cli.wait_for_service(timeout_sec=0.05):
+            try:
+                req = ToLL.Request()
+                # Support both interface variants
+                try:
+                    # Some versions use geometry_msgs/Point
+                    from geometry_msgs.msg import Point
+                    req.map_point = Point(x=float(x), y=float(y), z=0.0)
+                except Exception:
+                    try:
+                        req.x = float(x); req.y = float(y); req.z = 0.0
+                    except Exception:
+                        pass
+                fut = self._toll_cli.call_async(req)
+                t0 = time.time()
+                while not fut.done() and (time.time() - t0) < 1.0:
+                    time.sleep(0.01)
+                if fut.done():
+                    res = fut.result()
+                    ll = getattr(res, 'll_point', None)
+                    if ll is not None:
+                        return float(ll.x), float(ll.y)
+                    lat = getattr(res, 'latitude', None); lon = getattr(res, 'longitude', None)
+                    if lat is not None and lon is not None:
+                        return float(lat), float(lon)
+            except Exception:
+                pass
+        # Fallback: local tangent-plane approximation
         lat0 = self.gps_ref.get('lat0'); lon0 = self.gps_ref.get('lon0')
         if lat0 is None or lon0 is None or self.gps_ref.get('m_per_deg_lat') is None:
             return 0.0, 0.0
@@ -158,8 +221,8 @@ class NavCommanderGPS(Node):
         _, _, yaw = euler_from_quaternion([o.x, o.y, o.z, o.w])
         yaw_deg = (math.degrees(yaw) + 360.0) % 360.0
         self.pose_map = {'x': x, 'y': y, 'yaw': yaw, 'yaw_deg': yaw_deg}
-        # If we have a reference, update GPS pose from odom when /fix is not available
-        if self.gps_ref.get('lat0') is not None and self.gps_ref.get('lon0') is not None:
+        # If no GPS fix yet, fall back to projecting odom into GPS frame
+        if (not getattr(self, '_has_gps', False)) and self.gps_ref.get('lat0') is not None and self.gps_ref.get('lon0') is not None:
             lat, lon = self._xy_to_latlon(x, y)
             self.pose_gps['lat'] = lat
             self.pose_gps['lon'] = lon
@@ -184,6 +247,7 @@ class NavCommanderGPS(Node):
                 self.log_message(f"GPS ref set to lat={self.gps_ref['lat0']}, lon={self.gps_ref['lon0']}")
             self.pose_gps['lat'] = float(msg.latitude)
             self.pose_gps['lon'] = float(msg.longitude)
+            self._has_gps = True
 
     def _imu_cb(self, msg: Imu):
         # Compute yaw from IMU orientation quaternion

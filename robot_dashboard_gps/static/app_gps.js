@@ -48,8 +48,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentEditRouteKey = null;
     
     // --- Map Config & Drawing (GPS projection to local XY) ---
-    const origin = { x: canvas.width / 4, y: canvas.height / 2 };
-    const metersPerPixel = 0.5; // visual scale
+    let origin = { x: canvas.width / 2, y: canvas.height / 2 };
+    const defaultMetersPerPixel = 0.25; // start more zoomed-in
+    let metersPerPixel = defaultMetersPerPixel; // dynamic via zoom
 
     function latlonToXY(lat, lon) {
         if (gpsRef.lat0 == null || gpsRef.lon0 == null) return { x: 0, y: 0 };
@@ -59,6 +60,51 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function worldToScreenXY(x, y) { return { x: origin.x + x / metersPerPixel, y: origin.y - y / metersPerPixel }; }
     function worldToScreenLatLon(lat, lon){ const p = latlonToXY(lat, lon); return worldToScreenXY(p.x, p.y); }
+    function screenToWorldXY(sx, sy) { return { x: (sx - origin.x) * metersPerPixel, y: (origin.y - sy) * metersPerPixel }; }
+
+    function chooseGridStep() {
+        // Aim for ~80px grid spacing with nice round numbers
+        const targetPx = 80;
+        const targetMeters = metersPerPixel * targetPx;
+        const bases = [1, 2, 5];
+        let pow = Math.pow(10, Math.floor(Math.log10(targetMeters)));
+        for (let i = 0; i < 10; i++) {
+            for (const b of bases) {
+                const step = b * pow;
+                const px = step / metersPerPixel;
+                if (px >= targetPx * 0.8) return step;
+            }
+            pow /= 10;
+        }
+        return targetMeters;
+    }
+
+    function drawGrid() {
+        const step = chooseGridStep();
+        // Determine world rect covered by canvas
+        const tl = screenToWorldXY(0, 0);
+        const br = screenToWorldXY(canvas.width, canvas.height);
+        const minX = Math.min(tl.x, br.x), maxX = Math.max(tl.x, br.x);
+        const minY = Math.min(tl.y, br.y), maxY = Math.max(tl.y, br.y);
+        const startX = Math.floor(minX / step) * step;
+        const startY = Math.floor(minY / step) * step;
+        ctx.save();
+        ctx.strokeStyle = '#e6e8ea';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let x = startX; x <= maxX; x += step) {
+            const p1 = worldToScreenXY(x, minY);
+            const p2 = worldToScreenXY(x, maxY);
+            ctx.moveTo(p1.x + 0.5, p1.y); ctx.lineTo(p2.x + 0.5, p2.y);
+        }
+        for (let y = startY; y <= maxY; y += step) {
+            const p1 = worldToScreenXY(minX, y);
+            const p2 = worldToScreenXY(maxX, y);
+            ctx.moveTo(p1.x, p1.y + 0.5); ctx.lineTo(p2.x, p2.y + 0.5);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
 
     function cardFromHeading(deg){
         const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
@@ -82,6 +128,13 @@ document.addEventListener('DOMContentLoaded', () => {
     function render() {
         requestAnimationFrame(render);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Auto-center origin on robot position so motion is visible
+        if (gpsRef && gpsRef.lat0 != null && gpsRef.lon0 != null) {
+            const r = latlonToXY(poseGPS.lat, poseGPS.lon);
+            origin = { x: canvas.width / 2 - (r.x / metersPerPixel), y: canvas.height / 2 + (r.y / metersPerPixel) };
+        }
+        // Grid first
+        drawGrid();
         drawPathGPS(nav2Path, '#2b7cff', true);
         drawPathGPS(recordedPath, 'rgba(227, 0, 145, 0.5)', false, 2.5);
         Object.values(localRouteData.routes).forEach(route => drawPathGPS(route, '#e30091', false, 2.5));
@@ -100,6 +153,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         drawArrowGPS(poseGPS.lat, poseGPS.lon, poseGPS.heading_deg || 0);
     }
+
+    // --- Zoom Controls ---
+    function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+    function zoomBy(factor) { metersPerPixel = clamp(metersPerPixel * factor, 0.02, 5.0); }
+
+    const btnZoomIn = document.getElementById('zoom-in');
+    const btnZoomOut = document.getElementById('zoom-out');
+    const btnZoomReset = document.getElementById('zoom-reset');
+    if (btnZoomIn && btnZoomOut && btnZoomReset) {
+        btnZoomIn.onclick = () => zoomBy(0.9);
+        btnZoomOut.onclick = () => zoomBy(1.1);
+        btnZoomReset.onclick = () => { metersPerPixel = defaultMetersPerPixel; };
+    }
+    canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const dir = e.deltaY < 0 ? 0.9 : 1.1; // up = zoom in
+        zoomBy(dir);
+    }, { passive: false });
 
     function updateUI(data) {
         pose = data.pose || pose; // map-frame pose (for debugging)
@@ -383,4 +454,3 @@ document.addEventListener('DOMContentLoaded', () => {
 
     render(); poll();
 });
-
