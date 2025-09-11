@@ -17,7 +17,7 @@ from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rcl_interfaces.msg import Log
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, Imu
 from nav2_msgs.action import NavigateToPose, FollowPath, NavigateThroughPoses
 
 try:
@@ -81,15 +81,19 @@ class NavCommanderGPS(Node):
         self._monitor_thread = None
 
         # Topics
-        odom_topic = os.getenv('ODOM_TOPIC', '/odom')
-        gps_topic = os.getenv('GPS_TOPIC', '/fix')
+        # Use globally fused odometry and filtered GPS by default
+        odom_topic = os.getenv('ODOM_TOPIC', '/odometry/filtered/global')
+        gps_topic = os.getenv('GPS_TOPIC', '/gps/filtered')
+        imu_topic = os.getenv('IMU_TOPIC', '/imu')
         # Subscribe with Best Effort and Reliable for compatibility
         self.create_subscription(Odometry, odom_topic, self._odom_cb, qos_profile_sensor_data)
         self.create_subscription(Odometry, odom_topic, self._odom_cb, 10)
-        self.create_subscription(NavSatFix, gps_topic, self._gps_cb, 10)
+        self.create_subscription(NavSatFix, gps_topic, self._gps_cb, qos_profile_sensor_data)
+        self.create_subscription(Imu, imu_topic, self._imu_cb, qos_profile_sensor_data)
         self.create_subscription(Path, '/plan', self._plan_cb, 10)
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('GPS Dashboard node started and ready.')
+        self._has_imu = False
 
     def _env_float(self, key):
         try:
@@ -159,7 +163,9 @@ class NavCommanderGPS(Node):
             lat, lon = self._xy_to_latlon(x, y)
             self.pose_gps['lat'] = lat
             self.pose_gps['lon'] = lon
-        self.pose_gps['heading_deg'] = yaw_deg
+        # Use IMU heading when available; otherwise derive from odom
+        if not self._has_imu:
+            self.pose_gps['heading_deg'] = yaw_deg
         # Recording in GPS coordinates
         if self.is_recording:
             last_pt = self.recorded_path[-1] if self.recorded_path else None
@@ -178,6 +184,13 @@ class NavCommanderGPS(Node):
                 self.log_message(f"GPS ref set to lat={self.gps_ref['lat0']}, lon={self.gps_ref['lon0']}")
             self.pose_gps['lat'] = float(msg.latitude)
             self.pose_gps['lon'] = float(msg.longitude)
+
+    def _imu_cb(self, msg: Imu):
+        # Compute yaw from IMU orientation quaternion
+        o = msg.orientation
+        _, _, yaw = euler_from_quaternion([o.x, o.y, o.z, o.w])
+        self.pose_gps['heading_deg'] = (math.degrees(yaw) + 360.0) % 360.0
+        self._has_imu = True
 
     def set_route_data(self, data: Dict):
         settings = (data or {}).get('settings', {})
@@ -614,4 +627,3 @@ def main():
 
 
 if __name__ == '__main__': main()
-
