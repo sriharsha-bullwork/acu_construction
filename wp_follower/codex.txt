@@ -1,0 +1,280 @@
+Waypoints Follower (wp_follower) — System Overview and Developer Guide
+
+This document explains the architecture, data flow, and implementation details of the Waypoints Follower subsystem. It covers:
+- Backend components (ROS 2 + Flask) in `dashboard.py`
+- Utility/ROS bridge functions in `wp_follower.py`
+- The web dashboard UI in `templates/index.html` and styling in `static/style.css`
+
+The goal is to provide enough context for a new engineer or LLM to confidently extend or maintain the system without breaking existing behavior.
+
+-------------------------------------------------------------------------------
+1) High-Level Architecture
+-------------------------------------------------------------------------------
+
+The system provides a web-based dashboard for commanding a robot to navigate to GPS-defined waypoints and routes using Nav2 (ROS 2 navigation stack). It includes:
+
+- A Flask web server exposing HTTP endpoints for:
+  - Listing waypoints/routes
+  - Sending goals and routes to Nav2 via Simple Commander
+  - Pause/Resume/Cancel controls
+  - “Mission” mode management
+  - Import/Export of waypoints/routes JSON
+  - Telematics sampling (GPS, IMU heading, odometry/global, global plan)
+
+- A ROS 2 integration layer that:
+  - Converts GPS (lat, lon, yaw_deg) waypoints into map-frame XY + yaw using `/fromLL` service (robot_localization)
+  - Sends goals and waypoint-following tasks to Nav2 via `nav2_simple_commander.BasicNavigator`
+  - Polls task feedback/status and reports it via the dashboard API
+  - Samples telemetry on-demand from topics: `/gps/fix`, `/imu`, `/odometry/global`, and `/plan`
+
+- A single-page dashboard UI that:
+  - Shows status/metrics at the top
+  - Lists waypoints (left sidebar) and routes
+  - Provides control buttons (Start/Stop Mission, Pause/Resume/Cancel, Import/Export)
+  - Renders a large, high-DPI canvas with zoom/pan that displays:
+    - Current robot pose marker (from odometry)
+    - All waypoints converted to local map coordinates with labels
+    - The global plan polyline from Nav2 (`/plan`)
+
+Key design points:
+- ROS 2 calls that spin the executor are serialized with a global lock to avoid “generator already executing” errors when multiple requests arrive in parallel.
+- Telemetry is sampled “on-demand” (short, non-blocking) using a temporary node so the backend does not permanently spin a separate executor thread.
+- “Mission” mode controls UI behavior: Go buttons are disabled until mission is started (but mission itself does not auto-send goals).
+
+-------------------------------------------------------------------------------
+2) Data Model and JSON Formats
+-------------------------------------------------------------------------------
+
+Waypoints JSON (import/export):
+- `waypoints`: array of objects with keys:
+  - `id`: string identifier (required)
+  - `name`: optional human-friendly display name
+  - `lat`: latitude in degrees (required)
+  - `lon`: longitude in degrees (required)
+  - `yaw_deg`: heading in degrees (optional; default 0)
+- `routes`: either
+  - dict mapping `route_id` -> array of waypoint ids
+  - OR array of `{ id: string, waypoint_ids: [string] }`
+
+UI displays both “name” and “id”; “name” preferred when present.
+
+-------------------------------------------------------------------------------
+3) ROS 2 Utilities (`wp_follower.py`)
+-------------------------------------------------------------------------------
+
+Core helpers used by the dashboard backend:
+- `ll_to_map_xy(node, latitude, longitude, altitude=0.0)`
+  - Uses `robot_localization/FromLL` service `/fromLL` to convert GPS to map frame XY.
+
+- `gps_point_to_local(node, point)`
+  - Validates the waypoint dict, calls `/fromLL` via `ll_to_map_xy`, returns `{x, y, yaw_rad, id?, name?}`.
+
+- `gps_points_to_local(node, points)`
+  - Batch converts an array of waypoints using `gps_point_to_local`.
+
+- `build_goal_pose(navigator, x, y, yaw_rad)`
+  - Builds `geometry_msgs/PoseStamped` in `map` frame (with timestamp from navigator clock).
+
+These mirror logic used previously in the CLI tool-like main at bottom of `wp_follower.py` (sending a single goal from a YAML file), but the dashboard now uses them to convert arbitrary sets of waypoints from JSON.
+
+-------------------------------------------------------------------------------
+4) Backend Web Server and Navigation Bridge (`dashboard.py`)
+-------------------------------------------------------------------------------
+
+Create the app:
+- `create_app()` sets up Flask with template/static folders.
+- Waypoint source:
+  - If `WP_JSON_PATH` env var is set and file exists, waypoints/routes are loaded on startup.
+  - Otherwise, start with empty lists; user imports via dashboard.
+
+ROS serialization lock:
+- `ROS_SPIN_LOCK = threading.Lock()`
+  - All operations that call `rclpy.spin_*()` or Navigator methods are wrapped with this lock to avoid concurrent executor access.
+
+NavBridge class:
+- Holds:
+  - `self._helper`: ROS `Node` for `/fromLL`
+  - `self._navigator`: `BasicNavigator` for Nav2
+  - In-memory `self._waypoints`, `self._routes`
+  - Status bookkeeping: last goal id, status, mode, route progress, paused state, mission flag
+
+Primary methods:
+- `list_waypoints()`: returns sanitized waypoint list (for UI list)
+- `list_routes()`
+- `list_waypoints_local()`: converts all waypoints to local XY using `/fromLL` (UI canvas uses this)
+- `send_goal(wp_id)`: converts a single waypoint, sends Nav2 goal, sets status. If mission is active, keeps `mode='mission'`.
+- `start_route(route_id)`: converts all route waypoints and calls `followWaypoints()`
+- `cancel()`: cancels Nav2 task
+- `pause()`: captures current task state (single goal id or route index) and cancels, setting status to `paused`
+- `resume()`: re-issues the saved single goal or remaining route waypoints
+- `start_mission()`: toggles mission mode on (no auto navigation). UI then enables the manual selection of waypoints.
+- `stop_mission()`: cancels any task, resets state to idle/none and turns off mission
+- `export_data()`: returns `{waypoints, routes}` for download
+- `import_data(data)`: replaces waypoints/routes (only when no task `active`)
+
+Status polling:
+- `poll_status()`: returns current status, goal/route identifiers, distance remaining, ETA, route progress, and errors. Uses Navigator feedback/result under `ROS_SPIN_LOCK`.
+
+Telemetry sampling (on-demand within `create_app()`):
+- Temporary `Node` is created per sample; subscribes to the following topics with a short timeout (default ~250ms per future):
+  - `/gps/fix` (`sensor_msgs/NavSatFix`) → `gps: {lat, lon, alt, status, service}`
+  - `/imu` (`sensor_msgs/Imu`) → `heading_deg` computed from quaternion (yaw, normalized 0..360)
+  - `/odometry/global` (`nav_msgs/Odometry`) → `odom: {x, y, yaw_deg}`
+  - `/plan` (`nav_msgs/Path`) → `plan: {points: [{x,y}], frame}` (capped length to avoid large payloads)
+- Returns last-known values if nothing new arrives before timeout.
+- Exposed via `GET /api/telemetry`.
+
+HTTP routes summary:
+- UI:
+  - `GET /` → renders dashboard HTML
+
+- Waypoints/Routes:
+  - `GET /api/waypoints`
+  - `GET /api/routes`
+  - `GET /api/waypoints_local` (local XY for canvas)
+  - `POST /api/goal/<wp_id>`
+  - `POST /api/route/<route_id>`
+
+- Controls:
+  - `POST /api/cancel`
+  - `POST /api/pause`
+  - `POST /api/resume`
+  - `POST /api/mission/start`  (enable mission mode; no auto navigation)
+  - `POST /api/mission/stop`
+
+- Import/Export:
+  - `GET /api/export` → downloadable JSON
+  - `POST /api/import` → replaces in-memory waypoints/routes
+
+- Telemetry:
+  - `GET /api/telemetry` → `{ gps, heading_deg, odom, plan }`
+
+Error handling:
+- Most endpoints return `{ok: true/false, ...}` and include `error` on failure. `poll_status()` returns `status='error'` and `error` message on exceptions.
+
+-------------------------------------------------------------------------------
+5) Frontend Dashboard (`templates/index.html`)
+-------------------------------------------------------------------------------
+
+Layout:
+- Header with title and control buttons: Start/Stop Mission, Export, Import, Pause, Resume, Cancel.
+- Status section at top: current status/mode/goal/route with metrics (distance, ETA, route progress) and live GPS/Heading.
+- Two-column body:
+  - Left sidebar: Waypoints list (with “Go” buttons; disabled until mission mode is enabled), and empty-state guidance.
+  - Main content: Vehicle section with a large high-DPI canvas, and Routes section below.
+
+Mission gating:
+- By default, “Go” buttons are disabled; they enable only when `status.mode === 'mission'`.
+- Start Mission does NOT auto-send any goals; it only enables the manual selection of waypoints.
+
+Waypoints/Routes list:
+- `loadWaypoints()` populates list, shows empty-state message if none loaded.
+- `loadRoutes()` lists available routes.
+- After import, both are refreshed; mission start button is disabled if there are no waypoints.
+
+Controls wiring:
+- Pause/Resume/Cancel POST to their respective endpoints, then update the status view.
+- Export triggers a download of `/api/export`.
+- Import reads a local JSON file and POSTs to `/api/import`, then refreshes lists and canvas.
+
+Status/Telemetry polling:
+- `updateStatus()` polls `/api/status` every second and updates mission gating + metrics.
+- `updateTelemetry()` polls `/api/telemetry` every second; updates GPS/Heading readout and, if available, stores odometry and plan for canvas drawing.
+
+Canvas rendering:
+- The `<canvas id="vehicleCanvas">` is inside `.vehicle-panel` and styled to fill width with fixed height; actual backing resolution is adjusted using `devicePixelRatio` for crisp visuals.
+- Key functions:
+  - `resizeCanvasForDPR(canvas, ctx)`: sets backing store size to displayWidth*DPR and resets transform to draw in CSS pixels.
+  - `ensureOrigin()`: sets the world-space origin for the view (initially to odometry or waypoint centroid; fallback 0,0).
+  - `redrawCanvas()`: draws axes, waypoints + labels, global plan polyline, and the current vehicle marker.
+  - `drawVehicle(odom)`: stores odometry and triggers `redrawCanvas()`; there is no historical trail (as requested).
+
+Zoom/Pan:
+- Mouse wheel zooms in/out, anchored to the cursor, with scale clamped to a reasonable range.
+- Mouse drag pans by shifting the world origin (`odomOrigin`).
+- Event handlers are bound once on first redraw to avoid duplicates.
+
+Waypoints on canvas:
+- The canvas queries `GET /api/waypoints_local` to fetch pre-converted map-frame waypoints and renders them as green dots with text labels (name or id).
+
+-------------------------------------------------------------------------------
+6) Styling (`static/style.css`)
+-------------------------------------------------------------------------------
+
+- Light theme using CSS variables:
+  - Background white, dark text, accent color for controls.
+- Layout is a two-column grid with a sticky left sidebar.
+- Common components:
+  - Lists with rows, labels, metadata, and action buttons.
+  - Buttons styled with hover and disabled states.
+  - `.status-section` and `.vehicle-panel` styled as panels with borders and rounded corners.
+- Vehicle panel canvas is responsive (fills width) and is redrawn to match high-DPI displays.
+
+-------------------------------------------------------------------------------
+7) Concurrency and Reliability Notes
+-------------------------------------------------------------------------------
+
+- All ROS 2 executor operations are serialized via `ROS_SPIN_LOCK` to avoid re-entrancy errors when multiple Flask requests touch ROS simultaneously (e.g., sending a goal while telemetry is sampled).
+- Telemetry uses short-lived nodes with spin-until-future-complete; if a topic doesn’t yield quickly, the last-known data is returned to keep the UI responsive.
+- Import is blocked if a task is `active` to avoid changing the map set during navigation.
+
+-------------------------------------------------------------------------------
+8) Extensions and Tips
+-------------------------------------------------------------------------------
+
+Adding a new telemetry signal:
+- Extend `_sample_telem_once()` in `dashboard.py` with a subscription and field in the JSON. Guard spins with `ROS_SPIN_LOCK` and timeouts.
+- Update `updateTelemetry()` in the frontend to display or draw the new data.
+
+Adding a new control action:
+- Add a method on `NavBridge` to encapsulate behavior under `self._lock` and `ROS_SPIN_LOCK` as needed.
+- Expose a Flask route returning `{ok: bool, ...}`.
+- Wire a button in the header and update UI state accordingly.
+
+Persisting imported data:
+- Currently, import replaces the in-memory lists. To persist, write to a file (e.g., a designated `data/waypoints.json`) and on startup set `WP_JSON_PATH` to that file.
+
+Fitting the canvas view:
+- Implement a “Fit” button that sets `odomOrigin` to the centroid and `odomScale` so that all waypoints/plan are within margins.
+
+Frame consistency:
+- Waypoints_local are in `map` frame (via `/fromLL`). The odometry topic used is `/odometry/global` (typically in map frame). Ensure your Nav2 configuration publishes these consistently. If using different frames, adapt conversions or add TF queries.
+
+-------------------------------------------------------------------------------
+9) Running the Dashboard
+-------------------------------------------------------------------------------
+
+Prerequisites:
+- ROS 2 with Nav2, `robot_localization` (for `/fromLL`), and topics `/gps/fix`, `/imu`, `/odometry/global`, `/plan` available as appropriate.
+- Python dependencies for Flask and `nav2_simple_commander` installed in the environment.
+
+Start the app:
+- `python -m acu_construction.wp_follower.dashboard` (or run the file directly).
+- Environment:
+  - `WP_JSON_PATH=/path/to/waypoints.json` (optional). If not set, the app starts with no waypoints and expects you to import from the UI.
+  - `PORT=5000` (optional; defaults to 5000).
+
+Browse to `http://localhost:5000/`.
+
+-------------------------------------------------------------------------------
+10) Safety and Behavior Guarantees
+-------------------------------------------------------------------------------
+
+- Starting “Mission” only enables manual waypoint selection; it does not automatically traverse all waypoints.
+- “Go” while mission is active sends a single goal to Nav2 and keeps mission mode enabled (so you can send another after completion).
+- Pause/Resume aim to resume the same goal or remainder of a route. Resume of a route restarts the remaining segment; progress counters reflect the resumed segment length.
+- Cancel stops the active Nav2 task and sets status to `canceled`.
+- Stop Mission cancels any active task and returns the UI to normal mode with Go buttons disabled.
+
+-------------------------------------------------------------------------------
+11) File Map
+-------------------------------------------------------------------------------
+
+- `dashboard.py` — Flask app + NavBridge + on-demand telemetry sampling
+- `wp_follower.py` — GPS → map conversion helpers and goal-building utilities
+- `templates/index.html` — single-page dashboard UI with controls and canvas
+- `static/style.css` — light theme + layout + component styling
+- `demo_wp.json`, `demo_wp.yaml` — example data
+
+End of document.
+

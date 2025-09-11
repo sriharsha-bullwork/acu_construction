@@ -16,6 +16,7 @@ from rclpy.task import Future
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from sensor_msgs.msg import NavSatFix, Imu
 from nav_msgs.msg import Odometry
+from nav_msgs.msg import Path
 
 # Support running as a script or as a package module
 try:
@@ -523,6 +524,8 @@ def create_app() -> Flask:
     _last_heading_ts: Optional[float] = None
     _last_odom: Optional[Dict] = None
     _last_odom_ts: Optional[float] = None
+    _last_plan: Optional[Dict] = None  # {'points': [{'x','y'}], 'frame': str}
+    _last_plan_ts: Optional[float] = None
 
     def _quat_to_yaw_deg(x: float, y: float, z: float, w: float) -> float:
         siny_cosp = 2.0 * (w * z + x * y)
@@ -533,13 +536,14 @@ def create_app() -> Flask:
             deg += 360.0
         return deg
 
-    def _sample_telem_once(timeout_sec: float = 0.25) -> Tuple[Optional[Dict], Optional[float], Optional[Dict]]:
-        nonlocal _last_gps, _last_gps_ts, _last_heading_deg, _last_heading_ts, _last_odom, _last_odom_ts
+    def _sample_telem_once(timeout_sec: float = 0.25) -> Tuple[Optional[Dict], Optional[float], Optional[Dict], Optional[Dict]]:
+        nonlocal _last_gps, _last_gps_ts, _last_heading_deg, _last_heading_ts, _last_odom, _last_odom_ts, _last_plan, _last_plan_ts
         try:
             node = Node('wp_dashboard_telemetry_once')
             got_gps = Future()
             got_imu = Future()
             got_odom = Future()
+            got_plan = Future()
             data: Dict = {}
 
             def gps_cb(msg: NavSatFix):
@@ -578,10 +582,22 @@ def create_app() -> Flask:
             node.create_subscription(NavSatFix, '/gps/fix', gps_cb, 10)
             node.create_subscription(Imu, '/imu', imu_cb, 10)
             node.create_subscription(Odometry, '/odometry/global', odom_cb, 10)
+            def plan_cb(msg: Path):
+                try:
+                    pts = []
+                    for ps in list(msg.poses)[:2000]:
+                        pts.append({'x': float(ps.pose.position.x), 'y': float(ps.pose.position.y)})
+                    data['plan'] = {'points': pts, 'frame': str(msg.header.frame_id)}
+                except Exception:
+                    pass
+                if not got_plan.done():
+                    got_plan.set_result(True)
+            node.create_subscription(Path, '/plan', plan_cb, 10)
             with ROS_SPIN_LOCK:
                 rclpy.spin_until_future_complete(node, got_gps, timeout_sec=timeout_sec)
                 rclpy.spin_until_future_complete(node, got_imu, timeout_sec=timeout_sec)
                 rclpy.spin_until_future_complete(node, got_odom, timeout_sec=timeout_sec)
+                rclpy.spin_until_future_complete(node, got_plan, timeout_sec=timeout_sec)
             node.destroy_node()
             now = time.time()
             if got_gps.done() and 'gps' in data:
@@ -593,9 +609,12 @@ def create_app() -> Flask:
             if got_odom.done() and 'odom' in data:
                 _last_odom = data['odom']
                 _last_odom_ts = now
-            return _last_gps, _last_heading_deg, _last_odom
+            if got_plan.done() and 'plan' in data:
+                _last_plan = data['plan']
+                _last_plan_ts = now
+            return _last_gps, _last_heading_deg, _last_odom, _last_plan
         except Exception:
-            return _last_gps, _last_heading_deg, _last_odom
+            return _last_gps, _last_heading_deg, _last_odom, _last_plan
 
     @app.get('/')
     def index() -> Response:
@@ -639,8 +658,8 @@ def create_app() -> Flask:
 
     @app.get('/api/telemetry')
     def api_telemetry():
-        gps, heading, odom = _sample_telem_once()
-        return jsonify({'gps': gps, 'heading_deg': heading, 'odom': odom})
+        gps, heading, odom, plan = _sample_telem_once()
+        return jsonify({'gps': gps, 'heading_deg': heading, 'odom': odom, 'plan': plan})
 
     # Mission endpoints
     @app.post('/api/mission/start')

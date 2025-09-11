@@ -64,10 +64,10 @@
 
       // Simple vehicle view state
       let odomOrigin = null; // {x, y}
-      let odomTrail = [];
       let odomScale = 5; // px per meter
       let localWps = []; // [{id,name,x,y,yaw_deg}]
       let lastOdom = null;
+      let lastPlan = null; // {points:[{x,y}], frame}
 
       function resizeCanvasForDPR(canvas, ctx) {
         const dpr = window.devicePixelRatio || 1;
@@ -108,6 +108,10 @@
           x: cx + (pt.x - odomOrigin.x) * odomScale,
           y: cy - (pt.y - odomOrigin.y) * odomScale,
         });
+        const screenToWorld = (p) => ({
+          x: (p.x - cx) / odomScale + odomOrigin.x,
+          y: -(p.y - cy) / odomScale + odomOrigin.y,
+        });
 
         // Clear
         ctx.clearRect(0, 0, W, H);
@@ -142,15 +146,15 @@
           });
         }
 
-        // Trail
-        if (odomTrail.length > 1) {
-          ctx.strokeStyle = '#9ca3af';
+        // Global plan polyline
+        if (lastPlan && Array.isArray(lastPlan.points) && lastPlan.points.length > 1) {
+          ctx.strokeStyle = '#7c3aed';
           ctx.lineWidth = 2;
           ctx.beginPath();
-          const p0 = worldToScreen(odomTrail[0]);
+          const p0 = worldToScreen(lastPlan.points[0]);
           ctx.moveTo(p0.x, p0.y);
-          for (let i = 1; i < odomTrail.length; i++) {
-            const p = worldToScreen(odomTrail[i]);
+          for (let i = 1; i < lastPlan.points.length; i++) {
+            const p = worldToScreen(lastPlan.points[i]);
             ctx.lineTo(p.x, p.y);
           }
           ctx.stroke();
@@ -172,13 +176,51 @@
           ctx.fill();
           ctx.restore();
         }
+        // Bind interactions once (pan + zoom)
+        if (!canvas._handlersBound) {
+          let dragging = false;
+          let last = { x: 0, y: 0 };
+          canvas.addEventListener('mousedown', (e) => {
+            dragging = true;
+            last = { x: e.offsetX, y: e.offsetY };
+          });
+          window.addEventListener('mouseup', () => { dragging = false; });
+          canvas.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const dx = e.offsetX - last.x;
+            const dy = e.offsetY - last.y;
+            last = { x: e.offsetX, y: e.offsetY };
+            odomOrigin = {
+              x: odomOrigin.x - dx / odomScale,
+              y: odomOrigin.y + dy / odomScale,
+            };
+            redrawCanvas();
+          });
+          canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mouse = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            const cx = rect.width / 2, cy = rect.height / 2;
+            const world = {
+              x: (mouse.x - cx) / odomScale + odomOrigin.x,
+              y: -(mouse.y - cy) / odomScale + odomOrigin.y,
+            };
+            const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+            const newScale = Math.min(200, Math.max(0.5, odomScale * zoomFactor));
+            odomOrigin = {
+              x: world.x - (mouse.x - cx) / newScale,
+              y: world.y + (mouse.y - cy) / newScale,
+            };
+            odomScale = newScale;
+            redrawCanvas();
+          }, { passive: false });
+          canvas._handlersBound = true;
+        }
       }
 
       function drawVehicle(odom) {
         if (!odom) return;
         if (!odomOrigin) odomOrigin = { x: odom.x, y: odom.y };
-        odomTrail.push({ x: odom.x, y: odom.y });
-        if (odomTrail.length > 200) odomTrail.shift();
         redrawCanvas();
       }
 
@@ -402,6 +444,10 @@
             drawVehicle(t.odom);
           } else if (lastOdom) {
             drawVehicle(lastOdom);
+          }
+          if (t && t.plan && Array.isArray(t.plan.points)) {
+            lastPlan = t.plan;
+            redrawCanvas();
           }
         } catch (e) {
           // ignore transient errors
