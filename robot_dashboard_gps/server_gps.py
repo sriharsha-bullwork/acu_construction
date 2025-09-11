@@ -106,8 +106,11 @@ class NavCommanderGPS(Node):
         self._has_imu = False
         self._has_gps = False
         # robot_localization conversion services (optional but preferred)
-        self._fromll_cli = self.create_client(FromLL, '/fromLL') if HAVE_RL_LL else None
-        self._toll_cli = self.create_client(ToLL, '/toLL') if HAVE_RL_LL else None
+        fromll_name = os.getenv('FROMLL_SERVICE', '/fromLL')
+        toll_name = os.getenv('TOLL_SERVICE', '/toLL')
+        self._fromll_cli = self.create_client(FromLL, fromll_name) if HAVE_RL_LL else None
+        self._toll_cli = self.create_client(ToLL, toll_name) if HAVE_RL_LL else None
+        self.log_message(f"FromLL service: {fromll_name}, ToLL service: {toll_name}")
 
     def _env_float(self, key):
         try:
@@ -566,6 +569,10 @@ class NavCommanderGPS(Node):
 
     def _execute_navigate_to_pose(self, wp_data):
         goal_pose = self._create_pose_stamped_gps(wp_data)
+        if goal_pose is None:
+            self.is_moving = False
+            self.log_message('Goal conversion failed; not sending to Nav2.')
+            return
         self._last_goal_type = 'nav_to_pose'
         if HAVE_SIMPLE_NAV and self._navigator is not None:
             self._navigator.goToPose(goal_pose)
@@ -578,7 +585,17 @@ class NavCommanderGPS(Node):
 
     def _execute_follow_path(self, path_data):
         if HAVE_SIMPLE_NAV and self._navigator is not None:
-            poses = [self._create_pose_stamped_gps(p) for p in path_data]
+            poses = []
+            for p in path_data:
+                ps = self._create_pose_stamped_gps(p)
+                if ps is None:
+                    self.log_message('Skipping path point: conversion failed.')
+                    continue
+                poses.append(ps)
+            if not poses:
+                self.log_message('No valid path points; aborting follow_path.')
+                self.is_moving = False
+                return
             try:
                 self._last_goal_type = 'through_poses'
                 self._navigator.goThroughPoses(poses)
@@ -589,12 +606,27 @@ class NavCommanderGPS(Node):
         if not self._follow_path_client or not self._follow_path_client.server_is_ready():
             self.log_message('FollowPath server not ready.'); self.is_moving = False; return
         path_msg = Path(); path_msg.header.frame_id = 'map'
-        path_msg.poses = [self._create_pose_stamped_gps(p) for p in path_data]; goal_msg = FollowPath.Goal(); goal_msg.path = path_msg
+        poses = []
+        for p in path_data:
+            ps = self._create_pose_stamped_gps(p)
+            if ps is not None:
+                poses.append(ps)
+        if not poses:
+            self.log_message('No valid path points; aborting FollowPath action.'); self.is_moving = False; return
+        goal_msg = FollowPath.Goal(); path_msg.poses = poses; goal_msg.path = path_msg
         self._last_goal_type = 'follow_path'
         self._follow_path_client.send_goal_async(goal_msg).add_done_callback(self._goal_response_callback)
 
     def _execute_through_poses(self, path_data):
-        poses = [self._create_pose_stamped_gps(p) for p in path_data]
+        poses = []
+        for p in path_data:
+            ps = self._create_pose_stamped_gps(p)
+            if ps is None:
+                self.log_message('Skipping through-poses point: conversion failed.')
+                continue
+            poses.append(ps)
+        if not poses:
+            self.log_message('No valid through-poses; aborting.'); self.is_moving = False; return
         if HAVE_SIMPLE_NAV and self._navigator is not None:
             self._last_goal_type = 'through_poses'
             try:
