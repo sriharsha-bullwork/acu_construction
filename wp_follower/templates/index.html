@@ -60,6 +60,12 @@
         const data = await resp.json();
         const list = document.getElementById('wpList');
         list.innerHTML = '';
+        if (!Array.isArray(data) || data.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = 'No waypoints loaded. Use Import to load a waypoints.json file.';
+          list.appendChild(empty);
+        }
         data.forEach(wp => {
           const row = document.createElement('div');
           row.className = 'row';
@@ -89,6 +95,9 @@
           row.appendChild(actions);
           list.appendChild(row);
         });
+        // Disable mission start if there are no waypoints
+        const ms = document.getElementById('missionStartBtn');
+        if (ms) ms.disabled = !(Array.isArray(data) && data.length > 0);
         applyGoEnabled();
       }
 

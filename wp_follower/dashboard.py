@@ -482,8 +482,13 @@ def create_app() -> Flask:
     # Suppress verbose GET request logs in terminal
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
-    json_path = Path(os.environ.get('WP_JSON_PATH', str(DEFAULT_JSON_PATH)))
-    waypoints, routes = load_waypoints_and_routes(json_path)
+    # Startup: default to no waypoints unless WP_JSON_PATH is provided
+    wp_env = os.environ.get('WP_JSON_PATH')
+    if wp_env and Path(wp_env).exists():
+        json_path = Path(wp_env)
+        waypoints, routes = load_waypoints_and_routes(json_path)
+    else:
+        waypoints, routes = [], []
     nav = NavBridge(waypoints, routes)
 
     # On-demand telemetry sampling to avoid concurrent rclpy spinning
