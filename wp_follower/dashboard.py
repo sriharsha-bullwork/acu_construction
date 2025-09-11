@@ -10,8 +10,10 @@ from flask import Flask, jsonify, request, Response, render_template
 
 import rclpy
 from rclpy.node import Node
+from rclpy.task import Future
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from sensor_msgs.msg import NavSatFix
 
 # Support running as a script or as a package module
 try:
@@ -21,6 +23,9 @@ except ImportError:  # pragma: no cover - fallback for direct script runs
 
 
 DEFAULT_JSON_PATH = (Path(__file__).parent / 'demo_wp.json')
+
+# Serialize rclpy spinning across threads to avoid re-entrancy errors
+ROS_SPIN_LOCK = threading.Lock()
 
 
 class NavBridge:
@@ -89,12 +94,13 @@ class NavBridge:
             if not wp:
                 return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
             try:
-                local = gps_point_to_local(self._helper, wp)
-                pose = build_goal_pose(
-                    self._navigator,
-                    local['x'], local['y'], local['yaw_rad']
-                )
-                self._navigator.goToPose(pose)
+                with ROS_SPIN_LOCK:
+                    local = gps_point_to_local(self._helper, wp)
+                    pose = build_goal_pose(
+                        self._navigator,
+                        local['x'], local['y'], local['yaw_rad']
+                    )
+                    self._navigator.goToPose(pose)
                 self._last_goal_id = wp_id
                 self._status = 'active'
                 self._last_error = None
@@ -119,16 +125,17 @@ class NavBridge:
 
             try:
                 poses = []
-                for wid in wp_ids:
-                    w = self._find_wp(wid)
-                    if not w:
-                        raise ValueError(f'waypoint id not found in route: {wid}')
-                    local = gps_point_to_local(self._helper, w)
-                    poses.append(
-                        build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
-                    )
+                with ROS_SPIN_LOCK:
+                    for wid in wp_ids:
+                        w = self._find_wp(wid)
+                        if not w:
+                            raise ValueError(f'waypoint id not found in route: {wid}')
+                        local = gps_point_to_local(self._helper, w)
+                        poses.append(
+                            build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
+                        )
 
-                self._navigator.followWaypoints(poses)
+                    self._navigator.followWaypoints(poses)
                 self._last_goal_id = None
                 self._status = 'active'
                 self._last_error = None
@@ -145,7 +152,8 @@ class NavBridge:
     def cancel(self) -> Dict:
         with self._lock:
             try:
-                self._navigator.cancelTask()
+                with ROS_SPIN_LOCK:
+                    self._navigator.cancelTask()
                 # Mark as canceling; final status will settle on next poll
                 self._status = 'canceled'
                 return {'ok': True, 'status': self._status}
@@ -162,7 +170,8 @@ class NavBridge:
             try:
                 fb = None
                 try:
-                    fb = self._navigator.getFeedback()
+                    with ROS_SPIN_LOCK:
+                        fb = self._navigator.getFeedback()
                 except Exception:
                     fb = None
 
@@ -187,7 +196,8 @@ class NavBridge:
                         'wp_id': self._last_goal_id,
                     }
 
-                self._navigator.cancelTask()
+                with ROS_SPIN_LOCK:
+                    self._navigator.cancelTask()
                 self._status = 'paused'
                 return {'ok': True, 'status': self._status}
             except Exception as e:
@@ -211,9 +221,10 @@ class NavBridge:
                     wp = self._find_wp(wp_id)
                     if not wp:
                         return {'ok': False, 'error': f'waypoint not found: {wp_id}'}
-                    local = gps_point_to_local(self._helper, wp)
-                    pose = build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
-                    self._navigator.goToPose(pose)
+                    with ROS_SPIN_LOCK:
+                        local = gps_point_to_local(self._helper, wp)
+                        pose = build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
+                        self._navigator.goToPose(pose)
                     self._last_goal_id = wp_id
                     self._status = 'active'
                     self._last_error = None
@@ -240,14 +251,15 @@ class NavBridge:
                     return {'ok': True, 'status': 'succeeded'}
 
                 poses = []
-                for wid in wp_ids[start_idx:]:
-                    w = self._find_wp(wid)
-                    if not w:
-                        return {'ok': False, 'error': f'waypoint id not found in route: {wid}'}
-                    local = gps_point_to_local(self._helper, w)
-                    poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                with ROS_SPIN_LOCK:
+                    for wid in wp_ids[start_idx:]:
+                        w = self._find_wp(wid)
+                        if not w:
+                            return {'ok': False, 'error': f'waypoint id not found in route: {wid}'}
+                        local = gps_point_to_local(self._helper, w)
+                        poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
 
-                self._navigator.followWaypoints(poses)
+                    self._navigator.followWaypoints(poses)
                 self._last_goal_id = None
                 self._status = 'active'
                 self._last_error = None
@@ -281,11 +293,15 @@ class NavBridge:
             try:
                 fb = None
                 try:
-                    fb = self._navigator.getFeedback()
+                    with ROS_SPIN_LOCK:
+                        fb = self._navigator.getFeedback()
                 except Exception:
                     fb = None
 
-                if not self._navigator.isTaskComplete():
+                done = False
+                with ROS_SPIN_LOCK:
+                    done = self._navigator.isTaskComplete()
+                if not done:
                     # Still active; include feedback if available
                     distance = getattr(fb, 'distance_remaining', None) if fb else None
                     eta = None
@@ -311,7 +327,8 @@ class NavBridge:
                     }
 
                 # Completed; get final result
-                result = self._navigator.getResult()
+                with ROS_SPIN_LOCK:
+                    result = self._navigator.getResult()
                 if result == TaskResult.SUCCEEDED:
                     self._status = 'succeeded'
                 elif result == TaskResult.CANCELED:
@@ -389,6 +406,40 @@ def create_app() -> Flask:
     waypoints, routes = load_waypoints_and_routes(json_path)
     nav = NavBridge(waypoints, routes)
 
+    # On-demand telemetry sampling to avoid concurrent rclpy spinning
+    _last_gps: Optional[Dict] = None
+    _last_gps_ts: Optional[float] = None
+
+    def _sample_gps_once(timeout_sec: float = 0.25) -> Optional[Dict]:
+        nonlocal _last_gps, _last_gps_ts
+        try:
+            node = Node('wp_dashboard_telemetry_once')
+            done = Future()
+            data: Dict = {}
+
+            def cb(msg: NavSatFix):
+                data['gps'] = {
+                    'lat': float(msg.latitude),
+                    'lon': float(msg.longitude),
+                    'alt': float(msg.altitude),
+                    'status': getattr(getattr(msg, 'status', None), 'status', None),
+                    'service': getattr(getattr(msg, 'status', None), 'service', None),
+                }
+                if not done.done():
+                    done.set_result(True)
+
+            node.create_subscription(NavSatFix, '/gps/fix', cb, 10)
+            with ROS_SPIN_LOCK:
+                rclpy.spin_until_future_complete(node, done, timeout_sec=timeout_sec)
+            node.destroy_node()
+            if done.done() and 'gps' in data:
+                _last_gps = data['gps']
+                _last_gps_ts = time.time()
+                return _last_gps
+            return _last_gps
+        except Exception:
+            return _last_gps
+
     @app.get('/')
     def index() -> Response:
         return render_template('index.html')
@@ -424,6 +475,11 @@ def create_app() -> Flask:
     @app.post('/api/resume')
     def api_resume():
         return jsonify(nav.resume())
+
+    @app.get('/api/telemetry')
+    def api_telemetry():
+        gps = _sample_gps_once()
+        return jsonify({'gps': gps})
 
     return app
 

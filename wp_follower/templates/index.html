@@ -19,6 +19,7 @@
     <section class="status-section">
       <div id="status" class="status">Status: idle</div>
       <div id="metrics" class="metrics"></div>
+      <div id="gps" class="metrics"></div>
     </section>
 
     <!-- Two-column layout with waypoints on the side -->
@@ -148,9 +149,31 @@
       };
 
       setInterval(updateStatus, 1000);
+      async function updateTelemetry() {
+        try {
+          const resp = await fetch('/api/telemetry');
+          const t = await resp.json();
+          const gps = t && t.gps ? t.gps : null;
+          const el = document.getElementById('gps');
+          if (!gps) {
+            el.innerHTML = '<div><strong>GPS:</strong> —</div>';
+            return;
+          }
+          const latStr = Number(gps.lat).toFixed(6);
+          const lonStr = Number(gps.lon).toFixed(6);
+          el.innerHTML = `
+            <div><strong>Lat:</strong> ${latStr}</div>
+            <div><strong>Lon:</strong> ${lonStr}</div>
+          `;
+        } catch (e) {
+          // ignore transient errors
+        }
+      }
+      setInterval(updateTelemetry, 1000);
       loadWaypoints();
       loadRoutes();
       updateStatus();
+      updateTelemetry();
     </script>
   </body>
   </html>
