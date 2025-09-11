@@ -51,6 +51,9 @@ button:disabled, .button-like:disabled, .actions button:disabled {
 /* Status section at top */
 .status-section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
 
+/* Vehicle panel */
+.vehicle-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: inline-block; }
+
 /* Responsive tweaks */
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }

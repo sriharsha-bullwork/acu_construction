@@ -38,6 +38,12 @@
 
       <main class="content">
         <section>
+          <h2>Vehicle</h2>
+          <div class="vehicle-panel">
+            <canvas id="vehicleCanvas" width="360" height="240"></canvas>
+          </div>
+        </section>
+        <section>
           <h2>Routes</h2>
           <div id="routeList" class="list"></div>
         </section>
@@ -54,6 +60,70 @@
           if (!enabled) btn.title = 'Start Mission to enable manual goals';
           else btn.title = 'Send goal to this waypoint';
         });
+      }
+
+      // Simple vehicle view state
+      let odomOrigin = null; // {x, y}
+      let odomTrail = [];
+      let odomScale = 5; // px per meter
+
+      function drawVehicle(odom) {
+        const canvas = document.getElementById('vehicleCanvas');
+        if (!canvas || !odom) return;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        const cx = W / 2, cy = H / 2;
+
+        if (!odomOrigin) odomOrigin = { x: odom.x, y: odom.y };
+
+        // Maintain a short trail
+        odomTrail.push({ x: odom.x, y: odom.y });
+        if (odomTrail.length > 200) odomTrail.shift();
+
+        const worldToScreen = (pt) => ({
+          x: cx + (pt.x - odomOrigin.x) * odomScale,
+          y: cy - (pt.y - odomOrigin.y) * odomScale,
+        });
+
+        // Clear
+        ctx.clearRect(0, 0, W, H);
+
+        // Axes
+        ctx.strokeStyle = '#d1d5db';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, cy); ctx.lineTo(W, cy);
+        ctx.moveTo(cx, 0); ctx.lineTo(cx, H);
+        ctx.stroke();
+
+        // Trail
+        if (odomTrail.length > 1) {
+          ctx.strokeStyle = '#9ca3af';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          const p0 = worldToScreen(odomTrail[0]);
+          ctx.moveTo(p0.x, p0.y);
+          for (let i = 1; i < odomTrail.length; i++) {
+            const p = worldToScreen(odomTrail[i]);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.stroke();
+        }
+
+        // Vehicle marker (triangle)
+        const pos = worldToScreen({ x: odom.x, y: odom.y });
+        const yawRad = (Number(odom.yaw_deg) || 0) * Math.PI / 180;
+        ctx.save();
+        ctx.translate(pos.x, pos.y);
+        ctx.rotate(-yawRad); // invert for canvas y-down
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath();
+        ctx.moveTo(12, 0);
+        ctx.lineTo(-10, 7);
+        ctx.lineTo(-10, -7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
       }
       async function loadWaypoints() {
         const resp = await fetch('/api/waypoints');
@@ -248,16 +318,21 @@
           if (!gps) {
             const heading = (t && typeof t.heading_deg === 'number') ? `${Number(t.heading_deg).toFixed(1)}°` : '—';
             el.innerHTML = `<div><strong>GPS:</strong> —</div><div><strong>Heading:</strong> ${heading}</div>`;
-            return;
+          } else {
+            const latStr = Number(gps.lat).toFixed(6);
+            const lonStr = Number(gps.lon).toFixed(6);
+            const heading = (t && typeof t.heading_deg === 'number') ? `${Number(t.heading_deg).toFixed(1)}°` : '—';
+            el.innerHTML = `
+              <div><strong>Lat:</strong> ${latStr}</div>
+              <div><strong>Lon:</strong> ${lonStr}</div>
+              <div><strong>Heading:</strong> ${heading}</div>
+            `;
           }
-          const latStr = Number(gps.lat).toFixed(6);
-          const lonStr = Number(gps.lon).toFixed(6);
-          const heading = (t && typeof t.heading_deg === 'number') ? `${Number(t.heading_deg).toFixed(1)}°` : '—';
-          el.innerHTML = `
-            <div><strong>Lat:</strong> ${latStr}</div>
-            <div><strong>Lon:</strong> ${lonStr}</div>
-            <div><strong>Heading:</strong> ${heading}</div>
-          `;
+
+          // Draw vehicle from odometry if available
+          if (t && t.odom && typeof t.odom.x === 'number' && typeof t.odom.y === 'number') {
+            drawVehicle(t.odom);
+          }
         } catch (e) {
           // ignore transient errors
         }
