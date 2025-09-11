@@ -51,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let origin = { x: canvas.width / 2, y: canvas.height / 2 };
     const defaultMetersPerPixel = 0.25; // start more zoomed-in
     let metersPerPixel = defaultMetersPerPixel; // dynamic via zoom
+    let isPanning = false; let panStart = null; let originStart = null; let autoCenter = false;
 
     function latlonToXY(lat, lon) {
         if (gpsRef.lat0 == null || gpsRef.lon0 == null) return { x: 0, y: 0 };
@@ -128,8 +129,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function render() {
         requestAnimationFrame(render);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Auto-center origin on robot position so motion is visible
-        if (gpsRef && gpsRef.lat0 != null && gpsRef.lon0 != null) {
+        // Optional auto-center (off by default)
+        if (autoCenter && gpsRef && gpsRef.lat0 != null && gpsRef.lon0 != null) {
             const r = latlonToXY(poseGPS.lat, poseGPS.lon);
             origin = { x: canvas.width / 2 - (r.x / metersPerPixel), y: canvas.height / 2 + (r.y / metersPerPixel) };
         }
@@ -161,16 +162,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnZoomIn = document.getElementById('zoom-in');
     const btnZoomOut = document.getElementById('zoom-out');
     const btnZoomReset = document.getElementById('zoom-reset');
+    const btnCenter = document.getElementById('center-view');
     if (btnZoomIn && btnZoomOut && btnZoomReset) {
         btnZoomIn.onclick = () => zoomBy(0.9);
         btnZoomOut.onclick = () => zoomBy(1.1);
         btnZoomReset.onclick = () => { metersPerPixel = defaultMetersPerPixel; };
+    }
+    if (btnCenter) {
+        btnCenter.onclick = () => {
+            if (gpsRef && gpsRef.lat0 != null && gpsRef.lon0 != null) {
+                const r = latlonToXY(poseGPS.lat, poseGPS.lon);
+                origin = { x: canvas.width / 2 - (r.x / metersPerPixel), y: canvas.height / 2 + (r.y / metersPerPixel) };
+            }
+        };
     }
     canvas.addEventListener('wheel', (e) => {
         e.preventDefault();
         const dir = e.deltaY < 0 ? 0.9 : 1.1; // up = zoom in
         zoomBy(dir);
     }, { passive: false });
+    // Panning with mouse drag
+    canvas.addEventListener('mousedown', (e) => { isPanning = true; panStart = { x: e.clientX, y: e.clientY }; originStart = { ...origin }; });
+    window.addEventListener('mousemove', (e) => { if (!isPanning) return; const dx = e.clientX - panStart.x; const dy = e.clientY - panStart.y; origin = { x: originStart.x + dx, y: originStart.y + dy }; });
+    window.addEventListener('mouseup', () => { isPanning = false; });
 
     function updateUI(data) {
         pose = data.pose || pose; // map-frame pose (for debugging)

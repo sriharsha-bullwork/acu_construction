@@ -96,6 +96,8 @@ class NavCommanderGPS(Node):
         self.create_subscription(NavSatFix, gps_topic, self._gps_cb, qos_profile_sensor_data)
         self.create_subscription(Imu, imu_topic, self._imu_cb, qos_profile_sensor_data)
         self.create_subscription(Path, '/plan', self._plan_cb, 10)
+        self.create_subscription(Path, '/plan_smoothed', self._plan_cb, 10)
+        self.create_subscription(Path, '/received_global_plan', self._plan_cb, 10)
         self.create_subscription(Log, '/rosout', self._rosout_cb, 10)
         self.log_message('GPS Dashboard node started and ready.')
         self._has_imu = False
