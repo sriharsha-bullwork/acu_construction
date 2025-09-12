@@ -364,7 +364,9 @@
             const tdA = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
             const del = document.createElement('button'); del.className='btn-delete'; del.textContent='✕'; del.title='Delete';
             del.onclick = async () => { if (!confirm(`Delete route ${rt.from} -> ${rt.to} (and reverse)?`)) return; const r = await fetch('/api/gps_routes/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); const j = await r.json(); if (!j.ok) alert(j.error||'Delete failed'); await loadGpsRoutes(); };
-            actions.appendChild(del); tdA.appendChild(actions);
+            const sp = document.createElement('button'); sp.textContent='Smooth (Preview)'; sp.onclick = async () => { const r = await fetch('/api/gps_routes/smooth_preview', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); const j = await r.json(); if (!j.ok) { alert(j.error||'Smooth preview failed'); return; } window._previewLocal = j.points || []; redrawCanvas(); };
+            const sa = document.createElement('button'); sa.textContent='Apply Smoothed'; sa.onclick = async () => { const r = await fetch('/api/gps_routes/smooth_apply', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); const j = await r.json(); if (!j.ok) { alert(j.error||'Smooth apply failed'); return; } await loadGpsRoutes(); };
+            actions.appendChild(del); actions.appendChild(sp); actions.appendChild(sa); tdA.appendChild(actions);
             tr.appendChild(tdF); tr.appendChild(tdT); tr.appendChild(tdS); tr.appendChild(tdA); tbody.appendChild(tr);
           });
           table.appendChild(tbody); container.appendChild(table);
@@ -402,6 +404,7 @@
         const metrics = document.getElementById('metrics');
         // Nearby waypoint detection (client-side) using odom + local waypoints
         let nearText = '';
+        let turnAlertText = '';
         try {
           if (lastOdom && Array.isArray(localWps) && localWps.length) {
             let found = null;
@@ -410,12 +413,27 @@
               const dy = Number(wp.y) - Number(lastOdom.y);
               const d = Math.hypot(dx, dy);
               const tol = Number(wp.tol_m != null ? wp.tol_m : 1.5);
-              if (d <= tol) { found = { id: wp.id, name: wp.name || wp.id, dist: d, tol }; break; }
+              if (d <= tol) { found = { id: wp.id, name: wp.name || wp.id, dist: d, tol, x: Number(wp.x), y: Number(wp.y), yaw_deg: Number(wp.yaw_deg || 0) }; break; }
             }
             if (found) nearText = ` | near: ${found.name}`;
+            // If near a waypoint and plan exists, check departure angle against waypoint yaw
+            if (found && lastPlan && Array.isArray(lastPlan.points) && lastPlan.points.length > 1) {
+              let bestIdx = 0; let bestD = Infinity;
+              for (let i = 0; i < lastPlan.points.length; i++) {
+                const p = lastPlan.points[i];
+                const dd = Math.hypot(Number(p.x) - found.x, Number(p.y) - found.y);
+                if (dd < bestD) { bestD = dd; bestIdx = i; }
+              }
+              const i1 = Math.min(bestIdx + 1, lastPlan.points.length - 1);
+              const p0 = lastPlan.points[bestIdx]; const p1 = lastPlan.points[i1];
+              const depRad = Math.atan2(Number(p1.y) - Number(p0.y), Number(p1.x) - Number(p0.x));
+              const depDeg = (depRad * 180 / Math.PI + 360) % 360;
+              let diff = Math.abs(depDeg - found.yaw_deg) % 360; if (diff > 180) diff = 360 - diff;
+              if (diff > 120) turnAlertText = ` | ALERT: sharp departure at ${found.name} (${diff.toFixed(0)}°)`;
+            }
           }
         } catch {}
-        el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${nearText}${s.error ? ` | error: ${s.error}` : ''}`;
+        el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${nearText}${turnAlertText}${s.error ? ` | error: ${s.error}` : ''}`;
         const dist = s.distance_remaining != null ? `${Number(s.distance_remaining).toFixed(2)} m` : '—';
         const eta = s.eta_sec != null ? `${Number(s.eta_sec).toFixed(1)} s` : '—';
         const prog = (s.route_current != null && s.route_total) ? `${s.route_current}/${s.route_total}` : '—';
