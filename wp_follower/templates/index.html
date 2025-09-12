@@ -400,7 +400,22 @@
         const s = await resp.json();
         const el = document.getElementById('status');
         const metrics = document.getElementById('metrics');
-        el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${s.error ? ` | error: ${s.error}` : ''}`;
+        // Nearby waypoint detection (client-side) using odom + local waypoints
+        let nearText = '';
+        try {
+          if (lastOdom && Array.isArray(localWps) && localWps.length) {
+            let found = null;
+            for (const wp of localWps) {
+              const dx = Number(wp.x) - Number(lastOdom.x);
+              const dy = Number(wp.y) - Number(lastOdom.y);
+              const d = Math.hypot(dx, dy);
+              const tol = Number(wp.tol_m != null ? wp.tol_m : 1.5);
+              if (d <= tol) { found = { id: wp.id, name: wp.name || wp.id, dist: d, tol }; break; }
+            }
+            if (found) nearText = ` | near: ${found.name}`;
+          }
+        } catch {}
+        el.textContent = `Status: ${s.status}${s.mode ? ` | mode: ${s.mode}` : ''}${s.goal_id ? ` | goal: ${s.goal_id}` : ''}${s.route_id ? ` | route: ${s.route_id}` : ''}${nearText}${s.error ? ` | error: ${s.error}` : ''}`;
         const dist = s.distance_remaining != null ? `${Number(s.distance_remaining).toFixed(2)} m` : '—';
         const eta = s.eta_sec != null ? `${Number(s.eta_sec).toFixed(1)} s` : '—';
         const prog = (s.route_current != null && s.route_total) ? `${s.route_current}/${s.route_total}` : '—';

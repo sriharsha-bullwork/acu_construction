@@ -102,6 +102,7 @@ class NavBridge:
                 'lat': float(lat),
                 'lon': float(lon),
                 'yaw_deg': float(yaw_deg or 0.0),
+                'tol_m': float(os.environ.get('WP_TOL_M', '1.5')),
             }
             self._waypoints.append(wp)
             return {'ok': True, 'waypoint': wp}
@@ -139,6 +140,7 @@ class NavBridge:
                 'lat': w.get('lat'),
                 'lon': w.get('lon'),
                 'yaw_deg': w.get('yaw_deg', 0.0),
+                'tol_m': w.get('tol_m', 1.5),
             }
             for w in self._waypoints
         ]
@@ -296,6 +298,163 @@ class NavBridge:
                 self._last_error = str(e)
                 return {'ok': False, 'error': str(e)}
 
+    def _recompute_yaw_along(self, pts: List[Dict]) -> List[Dict]:
+        out: List[Dict] = []
+        for i, p in enumerate(pts):
+            yaw = p.get('yaw_deg', 0.0)
+            if i < len(pts) - 1:
+                n = pts[i + 1]
+                yaw = (math.degrees(math.atan2(float(n['lat']) - float(p['lat']), float(n['lon']) - float(p['lon']))) + 360.0) % 360.0
+            elif i > 0:
+                pr = pts[i - 1]
+                yaw = (math.degrees(math.atan2(float(p['lat']) - float(pr['lat']), float(p['lon']) - float(pr['lon']))) + 360.0) % 360.0
+            out.append({'lat': float(p['lat']), 'lon': float(p['lon']), 'yaw_deg': float(yaw)})
+        return out
+
+    def _concat_paths(self, paths: List[List[Dict]]) -> List[Dict]:
+        combo: List[Dict] = []
+        for seg in paths:
+            if not seg:
+                continue
+            if not combo:
+                combo.extend(seg)
+            else:
+                # Avoid duplicate junction point
+                if combo[-1]['lat'] == seg[0]['lat'] and combo[-1]['lon'] == seg[0]['lon']:
+                    combo.extend(seg[1:])
+                else:
+                    combo.extend(seg)
+        return self._recompute_yaw_along(combo)
+
+    def _smooth_sharp_turns(self, pts: List[Dict], angle_thresh_deg: float = 90.0, cut_ratio: float = 0.3, steps: int = 6) -> List[Dict]:
+        """Return a new list of points with sharp turns (> angle_thresh_deg) smoothed
+        by inserting a quadratic Bezier curve around the corner.
+        Operates directly in lat/lon assuming local scale; suitable for short segments.
+        """
+        if len(pts) < 3:
+            return pts
+
+        def to_vec(a, b):
+            return (float(b['lat']) - float(a['lat']), float(b['lon']) - float(a['lon']))
+
+        def norm(v):
+            import math
+            x, y = v
+            d = math.hypot(x, y)
+            return (x / d, y / d) if d > 0 else (0.0, 0.0)
+
+        def dot(v1, v2):
+            return v1[0] * v2[0] + v1[1] * v2[1]
+
+        def dist(a, b):
+            import math
+            return math.hypot(float(b['lat']) - float(a['lat']), float(b['lon']) - float(a['lon']))
+
+        def add(a, v, s):
+            return {'lat': float(a['lat']) + v[0] * s, 'lon': float(a['lon']) + v[1] * s}
+
+        new_pts: List[Dict] = []
+        new_pts.append({'lat': float(pts[0]['lat']), 'lon': float(pts[0]['lon']), 'yaw_deg': float(pts[0].get('yaw_deg', 0.0))})
+        for i in range(1, len(pts) - 1):
+            a, b, c = pts[i - 1], pts[i], pts[i + 1]
+            v1 = to_vec(a, b)
+            v2 = to_vec(b, c)
+            nv1 = norm(v1)
+            nv2 = norm(v2)
+            # Angle between segments (0 = straight, 180 = U-turn)
+            import math
+            cosang = max(-1.0, min(1.0, dot(nv1, nv2)))
+            ang = math.degrees(math.acos(cosang))
+            if ang > angle_thresh_deg:
+                # Create entry/exit points near the corner
+                l1 = dist(a, b)
+                l2 = dist(b, c)
+                entry = add(b, (-nv1[0], -nv1[1]), min(l1 * cut_ratio, l1 * 0.5))
+                exitp = add(b, nv2, min(l2 * cut_ratio, l2 * 0.5))
+                # Insert entry
+                new_pts.append({'lat': entry['lat'], 'lon': entry['lon'], 'yaw_deg': float(b.get('yaw_deg', 0.0))})
+                # Bezier points between entry and exit using control at the corner b
+                for k in range(1, steps + 1):
+                    t = k / (steps + 1)
+                    one = 1.0 - t
+                    # Quadratic Bezier blending
+                    lat = one * one * entry['lat'] + 2 * one * t * float(b['lat']) + t * t * exitp['lat']
+                    lon = one * one * entry['lon'] + 2 * one * t * float(b['lon']) + t * t * exitp['lon']
+                    new_pts.append({'lat': lat, 'lon': lon, 'yaw_deg': float(b.get('yaw_deg', 0.0))})
+                # Insert exit
+                new_pts.append({'lat': exitp['lat'], 'lon': exitp['lon'], 'yaw_deg': float(b.get('yaw_deg', 0.0))})
+            else:
+                new_pts.append({'lat': float(b['lat']), 'lon': float(b['lon']), 'yaw_deg': float(b.get('yaw_deg', 0.0))})
+        # Append last
+        new_pts.append({'lat': float(pts[-1]['lat']), 'lon': float(pts[-1]['lon']), 'yaw_deg': float(pts[-1].get('yaw_deg', 0.0))})
+        return self._recompute_yaw_along(new_pts)
+
+    def _find_chain_points(self, start_id: str, goal_id: str) -> Optional[List[Dict]]:
+        # BFS over directed graph of gps_routes keys
+        from collections import deque, defaultdict
+        graph = defaultdict(list)
+        for (frm, to) in self._gps_routes.keys():
+            graph[frm].append(to)
+        start = str(start_id); goal = str(goal_id)
+        if start not in graph:
+            return None
+        queue = deque([start])
+        parent = {start: None}
+        while queue:
+            u = queue.popleft()
+            if u == goal:
+                break
+            for v in graph.get(u, []):
+                if v not in parent:
+                    parent[v] = u
+                    queue.append(v)
+        if goal not in parent:
+            return None
+        # Reconstruct path of waypoint ids
+        chain_ids = []
+        cur = goal
+        while cur is not None:
+            chain_ids.append(cur)
+            cur = parent[cur]
+        chain_ids.reverse()
+        # Build combined points
+        segments: List[List[Dict]] = []
+        for i in range(len(chain_ids) - 1):
+            key = (chain_ids[i], chain_ids[i + 1])
+            pts = self._gps_routes.get(key)
+            if not pts:
+                return None
+            segments.append(pts)
+        return self._concat_paths(segments)
+
+    def follow_gps_path(self, from_id: str, to_id: str, points: List[Dict]) -> Dict:
+        with self._lock:
+            try:
+                poses = []
+                with ROS_SPIN_LOCK:
+                    local_path: List[Tuple[float, float]] = []
+                    for p in points:
+                        local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
+                        poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                        local_path.append((float(local['x']), float(local['y'])))
+                    self._navigator.goThroughPoses(poses)
+                self._last_goal_id = None
+                self._status = 'active'
+                self._last_error = None
+                self._mode = 'mission' if getattr(self, '_mission_active', False) else 'route'
+                # Route id using chain summary
+                self._route_id = f"{from_id}->{to_id}"
+                self._route_total = len(poses)
+                self._route_current = 0
+                self._active_gps_pair = (str(from_id), str(to_id))
+                self._active_path_local = local_path
+                self._active_is_gps = True
+                return {'ok': True, 'status': self._status, 'route_id': self._route_id}
+            except Exception as e:
+                self._status = 'error'
+                self._last_error = str(e)
+                return {'ok': False, 'error': str(e)}
+
     def publish_cmd_vel(self, lx_norm: float, az_norm: float) -> Dict:
         """Publish normalized cmd_vel from joystick to /cmd_vel.
 
@@ -334,6 +493,7 @@ class NavBridge:
                         'x': float(item['x']),
                         'y': float(item['y']),
                         'yaw_deg': float((item.get('yaw_rad') or 0.0) * 180.0 / 3.141592653589793),
+                        'tol_m': next((float(w.get('tol_m', 1.5)) for w in self._waypoints if w.get('id') == item.get('id')), 1.5),
                     })
                 return out
             except Exception as e:
@@ -600,6 +760,36 @@ class NavBridge:
                     start_idx = int(paused.get('index', 0))
                     key = (str(from_id), str(to_id))
                     pts = self._gps_routes.get(key)
+                    if (pts is None or start_idx >= len(pts)) and self._active_path_local:
+                        # Resume using active local path if combined chain was used or route key missing
+                        poses = []
+                        with ROS_SPIN_LOCK:
+                            sidx = min(len(self._active_path_local) - 1, max(0, start_idx + 1))
+                            for i in range(sidx, len(self._active_path_local)):
+                                x, y = self._active_path_local[i]
+                                # Derive yaw from next point when available
+                                if i < len(self._active_path_local) - 1:
+                                    nx, ny = self._active_path_local[i + 1]
+                                    yaw = math.atan2(ny - y, nx - x)
+                                else:
+                                    # Reuse previous yaw if at the last point
+                                    if i > sidx:
+                                        px, py = self._active_path_local[i - 1]
+                                        yaw = math.atan2(y - py, x - px)
+                                    else:
+                                        yaw = 0.0
+                                poses.append(build_goal_pose(self._navigator, float(x), float(y), float(yaw)))
+                            self._navigator.goThroughPoses(poses)
+                        self._last_goal_id = None
+                        self._status = 'active'
+                        self._last_error = None
+                        self._mode = 'mission' if getattr(self, '_mission_active', False) else 'route'
+                        self._route_id = f"{from_id}->{to_id}"
+                        self._route_total = len(poses)
+                        self._route_current = 0
+                        self._active_gps_pair = (str(from_id), str(to_id))
+                        return {'ok': True, 'status': self._status, 'route_id': self._route_id}
+
                     if not pts or start_idx >= len(pts):
                         self._status = 'succeeded'
                         self._mode = 'none'
@@ -968,6 +1158,47 @@ def create_app(topics: Optional[Dict] = None) -> Flask:
         tol = float(payload.get('tolerance_m', 2.0))
         return jsonify(nav.save_gps_route(str(frm), str(to), points, tolerance_m=tol))
 
+    @app.post('/api/gps_routes/smooth_preview')
+    def api_gps_routes_smooth_preview():
+        payload = request.get_json(silent=True) or {}
+        frm = str(payload.get('from_id'))
+        to = str(payload.get('to_id'))
+        ang = float(payload.get('angle_deg', 90.0))
+        cut = float(payload.get('cut_ratio', 0.3))
+        steps = int(payload.get('steps', 6))
+        pts = nav._gps_routes.get((frm, to))
+        if not pts:
+            return jsonify({'ok': False, 'error': 'route not found'}), 404
+        sm = nav._smooth_sharp_turns(pts, angle_thresh_deg=ang, cut_ratio=cut, steps=steps)
+        try:
+            with ROS_SPIN_LOCK:
+                locals_ = []
+                for p in sm:
+                    local = gps_point_to_local(nav._helper, p)
+                    locals_.append({'x': float(local['x']), 'y': float(local['y'])})
+            return jsonify({'ok': True, 'points': locals_})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
+
+    @app.post('/api/gps_routes/smooth_apply')
+    def api_gps_routes_smooth_apply():
+        payload = request.get_json(silent=True) or {}
+        frm = str(payload.get('from_id'))
+        to = str(payload.get('to_id'))
+        ang = float(payload.get('angle_deg', 90.0))
+        cut = float(payload.get('cut_ratio', 0.3))
+        steps = int(payload.get('steps', 6))
+        pts = nav._gps_routes.get((frm, to))
+        if not pts:
+            return jsonify({'ok': False, 'error': 'route not found'}), 404
+        sm = nav._smooth_sharp_turns(pts, angle_thresh_deg=ang, cut_ratio=cut, steps=steps)
+        with nav._lock:
+            nav._gps_routes[(frm, to)] = sm
+            rev = list(reversed(sm))
+            rev = nav._recompute_yaw_along(rev)
+            nav._gps_routes[(to, frm)] = rev
+        return jsonify({'ok': True, 'size': len(sm)})
+
     @app.post('/api/gps_routes/follow')
     def api_gps_routes_follow():
         payload = request.get_json(silent=True) or {}
@@ -1041,8 +1272,13 @@ def create_app(topics: Optional[Dict] = None) -> Flask:
                         continue
         except Exception:
             from_id = None
-        if from_id and (from_id, dest_id) in nav._gps_routes:
-            return jsonify(nav.follow_gps_route(from_id, dest_id))
+        if from_id:
+            if (from_id, dest_id) in nav._gps_routes:
+                return jsonify(nav.follow_gps_route(from_id, dest_id))
+            # Try chain path search
+            chain = nav._find_chain_points(from_id, dest_id)
+            if chain:
+                return jsonify(nav.follow_gps_path(from_id, dest_id, chain))
         # Fallback to single goal
         return jsonify(nav.send_goal(dest_id))
 
