@@ -191,14 +191,41 @@ class NavBridge:
             if not cleaned:
                 return {'ok': False, 'error': 'no valid points provided'}
 
-            # Ensure connection from waypoint to first point
-            d0 = haversine_m(float(w_from['lat']), float(w_from['lon']), cleaned[0]['lat'], cleaned[0]['lon'])
+            def bearing_deg(lat1, lon1, lat2, lon2):
+                from math import radians, degrees, sin, cos, atan2
+                y = sin(radians(lon2 - lon1)) * cos(radians(lat2))
+                x = cos(radians(lat1)) * sin(radians(lat2)) - sin(radians(lat1)) * cos(radians(lat2)) * cos(radians(lon2 - lon1))
+                brng = degrees(atan2(y, x))
+                return (brng + 360.0) % 360.0
+
+            def interpolate_line(lat1, lon1, lat2, lon2, step_m=3.0):
+                d = haversine_m(lat1, lon1, lat2, lon2)
+                if d <= step_m:
+                    return []
+                n = int(d // step_m)
+                pts = []
+                for i in range(1, n + 1):
+                    t = i / (n + 1)
+                    lat = lat1 + (lat2 - lat1) * t
+                    lon = lon1 + (lon2 - lon1) * t
+                    pts.append({'lat': lat, 'lon': lon})
+                return pts
+
+            # Ensure connection from waypoint to first point (insert straight-line segments broken into few meters)
+            wlat1, wlon1 = float(w_from['lat']), float(w_from['lon'])
+            d0 = haversine_m(wlat1, wlon1, cleaned[0]['lat'], cleaned[0]['lon'])
             if d0 > tolerance_m:
-                cleaned = [{'lat': float(w_from['lat']), 'lon': float(w_from['lon']), 'yaw_deg': float(w_from.get('yaw_deg', 0.0))}] + cleaned
-            # Ensure connection to end waypoint
-            de = haversine_m(cleaned[-1]['lat'], cleaned[-1]['lon'], float(w_to['lat']), float(w_to['lon']))
+                brg = bearing_deg(wlat1, wlon1, cleaned[0]['lat'], cleaned[0]['lon'])
+                segs = [{'lat': wlat1, 'lon': wlon1}] + interpolate_line(wlat1, wlon1, cleaned[0]['lat'], cleaned[0]['lon'])
+                cleaned = [{'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': brg} for p in segs] + cleaned
+
+            # Ensure connection to end waypoint (insert straight-line segments)
+            wlat2, wlon2 = float(w_to['lat']), float(w_to['lon'])
+            de = haversine_m(cleaned[-1]['lat'], cleaned[-1]['lon'], wlat2, wlon2)
             if de > tolerance_m:
-                cleaned = cleaned + [{'lat': float(w_to['lat']), 'lon': float(w_to['lon']), 'yaw_deg': float(w_to.get('yaw_deg', 0.0))}]
+                brg2 = bearing_deg(cleaned[-1]['lat'], cleaned[-1]['lon'], wlat2, wlon2)
+                segs2 = interpolate_line(cleaned[-1]['lat'], cleaned[-1]['lon'], wlat2, wlon2) + [{'lat': wlat2, 'lon': wlon2}]
+                cleaned = cleaned + [{'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': brg2} for p in segs2]
 
             key = (str(from_id), str(to_id))
             self._gps_routes[key] = cleaned

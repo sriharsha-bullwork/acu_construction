@@ -68,7 +68,6 @@
             <button id="btn-start-recording">Start Recording</button>
             <button id="btn-finish-recording" disabled>Finish Recording</button>
             <button id="btn-save-route" disabled>Save Route</button>
-            <button id="btn-follow-route" disabled>Follow Route</button>
           </div>
           <div id="recording-status" class="recording-status mono"></div>
 
@@ -574,6 +573,18 @@
             };
             const density = window._recDensityM || 0.5;
             if (!last || distM({lat:last.lat,lon:last.lon},{lat:pt.lat,lon:pt.lon}) >= density) {
+              // Add straight-line breakdown between last and pt if gap large
+              if (last) {
+                const step = 3.0;
+                const d = distM(last, pt);
+                if (d > step) {
+                  const n = Math.floor(d / step);
+                  for (let i = 1; i <= n; i++) {
+                    const tfrac = i / (n + 1);
+                    arr.push({ lat: last.lat + (pt.lat - last.lat) * tfrac, lon: last.lon + (pt.lon - last.lon) * tfrac, yaw_deg: pt.yaw_deg });
+                  }
+                }
+              }
               arr.push(pt);
               const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recording: ${arr.length} points`;
               // Preview conversion to local for canvas drawing
@@ -683,17 +694,16 @@
         const btnStart = document.getElementById('btn-start-recording');
         const btnFinish = document.getElementById('btn-finish-recording');
         const btnSave = document.getElementById('btn-save-route');
-        const btnFollow = document.getElementById('btn-follow-route');
         const selFrom = document.getElementById('route-from');
         const selTo = document.getElementById('route-to');
-        if (!btnStart || !btnFinish || !btnSave || !btnFollow || !selFrom || !selTo) return;
+        if (!btnStart || !btnFinish || !btnSave || !selFrom || !selTo) return;
         window._recActive = false; window._recPoints = []; window._recDensityM = 0.5; const tolM = 2.0;
 
         btnStart.onclick = () => {
-          window._recPoints = []; window._recActive = true; btnFinish.disabled = false; btnSave.disabled = true; btnFollow.disabled = true; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Recording: 0 points';
+          window._recPoints = []; window._recActive = true; btnStart.disabled = true; btnFinish.disabled = false; btnSave.disabled = true; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Recording: 0 points';
         };
         btnFinish.onclick = async () => {
-          window._recActive = false; btnFinish.disabled = true; btnSave.disabled = false; btnFollow.disabled = false; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recorded: ${(window._recPoints||[]).length} points`;
+          window._recActive = false; btnFinish.disabled = true; btnSave.disabled = false; btnStart.disabled = false; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recorded: ${(window._recPoints||[]).length} points`;
           // Keep preview as the final recorded path
           try {
             const arr = window._recPoints || [];
@@ -705,12 +715,9 @@
           const from_id = selFrom.value; const to_id = selTo.value; const points = window._recPoints || [];
           const r = await fetch('/api/gps_routes/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id, to_id, points, tolerance_m: tolM})});
           const j = await r.json(); if (!j.ok) { alert(j.error||'Save failed'); return; }
-          await loadGpsRoutes(); const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Saved route.'; btnSave.disabled = true; btnFollow.disabled = true;
+          await loadGpsRoutes(); const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Saved route.'; btnSave.disabled = true;
         };
-        btnFollow.onclick = async () => {
-          // Removed direct follow from UI per requirement; reuse mission on-demand flow if desired
-          alert('Follow via On-Demand Navigation during Mission.');
-        };
+        // Removed follow route button
         // Preview saved route when selects change
         const previewSaved = async () => {
           const from_id = selFrom.value; const to_id = selTo.value;
