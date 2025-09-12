@@ -150,7 +150,7 @@ def generate_launch_description():
     # Early stack
     ld.add_action(rover_gnss)
     ld.add_action(base_gnss)
-    # ld.add_action(ntrip_client)
+    ld.add_action(ntrip_client)
     ld.add_action(rosbridge)
     ld.add_action(sllidar)
     ld.add_action(zedx)
