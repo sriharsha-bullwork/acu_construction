@@ -21,7 +21,7 @@ from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as NavPath
 from geometry_msgs.msg import Twist
 
-# Support running as a script or as a package module
+# Support running as a script or as a package module this one
 try:
     from .wp_follower import gps_point_to_local, gps_points_to_local, build_goal_pose
 except ImportError:  # pragma: no cover - fallback for direct script runs
