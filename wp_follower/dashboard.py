@@ -158,6 +158,15 @@ class NavBridge:
                 out.append({'from': frm, 'to': to, 'size': len(pts)})
             return out
 
+    def delete_gps_route(self, from_id: str, to_id: str) -> Dict:
+        with self._lock:
+            removed = 0
+            for key in [(str(from_id), str(to_id)), (str(to_id), str(from_id))]:
+                if key in self._gps_routes:
+                    del self._gps_routes[key]
+                    removed += 1
+            return {'ok': True, 'removed': removed}
+
     def save_gps_route(self, from_id: str, to_id: str, points: List[Dict], tolerance_m: float = 2.0) -> Dict:
         """Save a GPS route between two waypoints, also store reverse.
 
@@ -170,6 +179,8 @@ class NavBridge:
                 return {'ok': False, 'error': 'missing from_id/to_id'}
             if not isinstance(points, list) or len(points) < 1:
                 return {'ok': False, 'error': 'points must be non-empty list'}
+            if str(from_id) == str(to_id):
+                return {'ok': False, 'error': 'from and to cannot be the same (no self route)'}
             w_from = self._find_wp(from_id)
             w_to = self._find_wp(to_id)
             if not w_from or not w_to:
@@ -881,6 +892,14 @@ def create_app() -> Flask:
         frm = payload.get('from_id'); to = payload.get('to_id')
         return jsonify(nav.follow_gps_route(str(frm), str(to)))
 
+    @app.post('/api/gps_routes/delete')
+    def api_gps_routes_delete():
+        payload = request.get_json(silent=True) or {}
+        frm = payload.get('from_id'); to = payload.get('to_id')
+        if not frm or not to:
+            return jsonify({'ok': False, 'error': 'from_id and to_id required'}), 400
+        return jsonify(nav.delete_gps_route(str(frm), str(to)))
+
     @app.post('/api/gps_routes/preview_local')
     def api_gps_routes_preview_local():
         payload = request.get_json(silent=True) or {}
@@ -944,6 +963,29 @@ def create_app() -> Flask:
             return jsonify(nav.follow_gps_route(from_id, dest_id))
         # Fallback to single goal
         return jsonify(nav.send_goal(dest_id))
+
+    @app.post('/api/clear_all')
+    def api_clear_all():
+        # Cancel any running task and clear all waypoints, routes, gps_routes
+        try:
+            with ROS_SPIN_LOCK:
+                nav._navigator.cancelTask()
+        except Exception:
+            pass
+        with nav._lock:
+            nav._mission_active = False
+            nav._paused = None
+            nav._last_goal_id = None
+            nav._mode = 'none'
+            nav._route_id = None
+            nav._route_total = 0
+            nav._route_current = None
+            nav._status = 'idle'
+            nav._last_error = None
+            nav._waypoints = []
+            nav._routes = []
+            nav._gps_routes = {}
+        return jsonify({'ok': True})
 
     @app.post('/api/cancel')
     def api_cancel():
