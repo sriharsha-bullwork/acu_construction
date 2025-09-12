@@ -82,6 +82,22 @@
 
         <h2>Joystick</h2>
         <div id="joystick" class="joystick"><div id="stick" class="stick"></div></div>
+
+        <h2>Video</h2>
+        <div id="video-card" class="video-card">
+          <div class="settings-grid">
+            <label for="video-url">URL</label>
+            <input type="url" id="video-url" placeholder="https://host:port/path/to/webrtc.html" />
+          </div>
+          <div class="buttons">
+            <button id="btn-video-embed">Embed</button>
+            <button id="btn-video-open">Open in New Tab</button>
+          </div>
+          <div class="video-frame-wrap">
+            <iframe id="video-frame" title="WebRTC Feed" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms" src="about:blank"></iframe>
+          </div>
+          <div id="video-note" class="video-note mono"></div>
+        </div>
       </section>
     </main>
 
@@ -617,6 +633,49 @@
         const clr = document.createElement('button'); clr.textContent = 'Clear All'; clr.title = 'Clear all waypoints and routes';
         clr.onclick = async () => { if (!confirm('Clear all waypoints and routes?')) return; const r = await fetch('/api/clear_all', {method:'POST'}); const j = await r.json(); if (!j.ok) { alert(j.error||'Failed to clear'); return; } window._previewLocal = []; await loadWaypoints(); await loadRoutes(); await loadGpsRoutes(); await loadWaypointsLocal(); redrawCanvas(); };
         headerRight.appendChild(clr);
+      })();
+
+      // Video card logic
+      (function initVideoCard(){
+        const urlInput = document.getElementById('video-url');
+        const btnEmbed = document.getElementById('btn-video-embed');
+        const btnOpen = document.getElementById('btn-video-open');
+        const frame = document.getElementById('video-frame');
+        const note = document.getElementById('video-note');
+        if (!urlInput || !btnEmbed || !btnOpen || !frame) return;
+
+        // Restore remembered URL
+        try { const saved = localStorage.getItem('video_url'); if (saved) urlInput.value = saved; } catch {}
+
+        const setFrame = (u) => {
+          if (!u) return;
+          frame.src = u;
+          try { localStorage.setItem('video_url', u); } catch {}
+          // Show tip for X-Frame-Options issues
+          setTimeout(() => { if (note) note.textContent = ''; }, 100);
+        };
+
+        btnEmbed.onclick = () => {
+          const u = urlInput.value.trim();
+          if (!u) { alert('Enter a valid URL'); return; }
+          setFrame(u);
+          // If target blocks embedding (X-Frame-Options), show a helpful note
+          setTimeout(() => {
+            try {
+              // Accessing frame.contentDocument may fail on cross-origin; rely on user feedback
+              if (note) note.textContent = 'If the page fails to load here, it may disallow embedding. Use "Open in New Tab".';
+            } catch {}
+          }, 300);
+        };
+
+        btnOpen.onclick = () => {
+          const u = urlInput.value.trim();
+          if (!u) { alert('Enter a valid URL'); return; }
+          try { window.open(u, '_blank', 'noopener'); } catch {}
+        };
+
+        // Auto-embed on load if URL present
+        if (urlInput.value) setFrame(urlInput.value);
       })();
 
       setInterval(updateStatus, 1000);
