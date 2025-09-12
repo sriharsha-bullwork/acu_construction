@@ -917,9 +917,10 @@ class NavBridge:
                 elif result == TaskResult.CANCELED:
                     self._status = 'canceled'
                 elif result == TaskResult.FAILED:
-                    code, msg = self._navigator.getTaskError()
+                    # BasicNavigator does not expose detailed error via getTaskError()
+                    # Mark as failed with a generic message to avoid AttributeError
                     self._status = 'failed'
-                    self._last_error = f'{code}: {msg}'
+                    self._last_error = 'navigation failed'
                 else:
                     self._status = 'error'
                     self._last_error = 'unknown result'
