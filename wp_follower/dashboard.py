@@ -848,6 +848,70 @@ def create_app() -> Flask:
         frm = payload.get('from_id'); to = payload.get('to_id')
         return jsonify(nav.follow_gps_route(str(frm), str(to)))
 
+    @app.post('/api/gps_routes/preview_local')
+    def api_gps_routes_preview_local():
+        payload = request.get_json(silent=True) or {}
+        points = payload.get('points') or []
+        try:
+            with ROS_SPIN_LOCK:
+                locals_ = []
+                for p in points:
+                    if not isinstance(p, dict):
+                        continue
+                    if 'lat' not in p or 'lon' not in p:
+                        continue
+                    local = gps_point_to_local(nav._helper, p)
+                    locals_.append({'x': float(local['x']), 'y': float(local['y'])})
+            return jsonify({'ok': True, 'points': locals_})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
+
+    @app.get('/api/gps_routes/local')
+    def api_gps_routes_local():
+        frm = request.args.get('from_id'); to = request.args.get('to_id')
+        if not frm or not to:
+            return jsonify({'ok': False, 'error': 'from_id and to_id required'}), 400
+        key = (str(frm), str(to))
+        pts = nav._gps_routes.get(key) or []
+        try:
+            with ROS_SPIN_LOCK:
+                locals_ = []
+                for p in pts:
+                    local = gps_point_to_local(nav._helper, p)
+                    locals_.append({'x': float(local['x']), 'y': float(local['y'])})
+            return jsonify({'ok': True, 'points': locals_})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
+
+    @app.post('/api/mission/goal/<dest_id>')
+    def api_mission_goal(dest_id: str):
+        # Determine nearest waypoint to current GPS fix; if a route exists, follow it, else send single goal
+        gps, heading, _, _ = _sample_telem_once()
+        from_id = None
+        try:
+            data = nav.list_waypoints()
+            best_d = 1e18
+            if gps and 'lat' in gps and 'lon' in gps:
+                glat = float(gps['lat']); glon = float(gps['lon'])
+                from math import radians, sin, cos, sqrt, atan2
+                def haversine(a,b,c,d):
+                    R=6371000.0; dlat=radians(c-a); dlon=radians(d-b)
+                    aa = sin(dlat/2)**2 + cos(radians(a))*cos(radians(c))*sin(dlon/2)**2
+                    return 2*R*atan2(sqrt(aa), sqrt(1-aa))
+                for w in data:
+                    try:
+                        d = haversine(glat, glon, float(w['lat']), float(w['lon']))
+                        if d < best_d:
+                            best_d = d; from_id = w['id']
+                    except Exception:
+                        continue
+        except Exception:
+            from_id = None
+        if from_id and (from_id, dest_id) in nav._gps_routes:
+            return jsonify(nav.follow_gps_route(from_id, dest_id))
+        # Fallback to single goal
+        return jsonify(nav.send_goal(dest_id))
+
     @app.post('/api/cancel')
     def api_cancel():
         return jsonify(nav.cancel())

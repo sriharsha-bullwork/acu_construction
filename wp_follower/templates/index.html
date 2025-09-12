@@ -193,6 +193,20 @@
           ctx.stroke();
         }
 
+        // Preview GPS route (local points)
+        if (window._previewLocal && window._previewLocal.length > 1) {
+          ctx.strokeStyle = '#10b981'; // green
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          const p0 = worldToScreen(window._previewLocal[0]);
+          ctx.moveTo(p0.x, p0.y);
+          for (let i = 1; i < window._previewLocal.length; i++) {
+            const p = worldToScreen(window._previewLocal[i]);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.stroke();
+        }
+
         // Vehicle marker
         if (lastOdom && typeof lastOdom.x === 'number') {
           const pos = worldToScreen({ x: lastOdom.x, y: lastOdom.y });
@@ -302,21 +316,18 @@
         applyGoEnabled();
       }
 
-  async function loadRoutes() {
+      async function loadRoutes() {
         const resp = await fetch('/api/routes');
         const data = await resp.json();
         const container = document.getElementById('route-table-container'); container.innerHTML = '';
         if (!Array.isArray(data) || data.length === 0) { const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No routes available in JSON'; container.appendChild(empty); return; }
-        const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>Route</th><th>Info</th><th>Actions</th></tr></thead>';
+        const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>Route</th><th>Info</th></tr></thead>';
         const tbody = document.createElement('tbody');
         data.forEach(rt => {
           const tr = document.createElement('tr');
           const tdName = document.createElement('td'); tdName.textContent = rt.id;
           const tdMeta = document.createElement('td'); tdMeta.className='mono'; tdMeta.textContent = `waypoints: ${rt.size}`;
-          const tdAct = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
-          const start = document.createElement('button'); start.textContent='Start'; start.onclick = async () => { const r = await fetch(`/api/route/${rt.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to start route'); await updateStatus(); };
-          actions.appendChild(start); tdAct.appendChild(actions);
-          tr.appendChild(tdName); tr.appendChild(tdMeta); tr.appendChild(tdAct); tbody.appendChild(tr);
+          tr.appendChild(tdName); tr.appendChild(tdMeta); tbody.appendChild(tr);
         });
         table.appendChild(tbody); container.appendChild(table);
       }
@@ -327,17 +338,14 @@
           const data = await resp.json();
           const container = document.getElementById('gps-route-table-container'); container.innerHTML = '';
           if (!Array.isArray(data) || data.length === 0) { const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No recorded GPS routes'; container.appendChild(empty); return; }
-          const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>From</th><th>To</th><th>Points</th><th>Actions</th></tr></thead>';
+          const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>From</th><th>To</th><th>Points</th></tr></thead>';
           const tbody = document.createElement('tbody');
           data.forEach(rt => {
             const tr = document.createElement('tr');
             const tdF = document.createElement('td'); tdF.textContent = rt.from;
             const tdT = document.createElement('td'); tdT.textContent = rt.to;
             const tdS = document.createElement('td'); tdS.textContent = String(rt.size || 0);
-            const tdA = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
-            const btn = document.createElement('button'); btn.textContent = 'Follow'; btn.onclick = async () => { await fetch('/api/gps_routes/follow', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); await updateStatus(); };
-            actions.appendChild(btn); tdA.appendChild(actions);
-            tr.appendChild(tdF); tr.appendChild(tdT); tr.appendChild(tdS); tr.appendChild(tdA); tbody.appendChild(tr);
+            tr.appendChild(tdF); tr.appendChild(tdT); tr.appendChild(tdS); tbody.appendChild(tr);
           });
           table.appendChild(tbody); container.appendChild(table);
         } catch {}
@@ -413,7 +421,7 @@
           }
           data.forEach(wp => {
             const b = document.createElement('button'); b.textContent = wp.name || wp.id; b.dataset.wpId = wp.id;
-            b.onclick = async () => { const r = await fetch(`/api/goal/${wp.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to send goal'); await updateStatus(); };
+            b.onclick = async () => { const r = await fetch(`/api/mission/goal/${wp.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to send goal'); await updateStatus(); };
             odb.appendChild(b);
           });
         } catch {}
@@ -556,7 +564,7 @@
             lastPlan = t.plan;
             redrawCanvas();
           }
-          // Route recording (frontend sampling)
+          // Route recording (frontend sampling + preview)
           if (window._recActive && t && t.gps && typeof t.heading_deg === 'number') {
             const pt = { lat: Number(t.gps.lat), lon: Number(t.gps.lon), yaw_deg: Number(t.heading_deg) };
             const arr = window._recPoints || (window._recPoints = []);
@@ -568,6 +576,11 @@
             if (!last || distM({lat:last.lat,lon:last.lon},{lat:pt.lat,lon:pt.lon}) >= density) {
               arr.push(pt);
               const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recording: ${arr.length} points`;
+              // Preview conversion to local for canvas drawing
+              try {
+                const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arr }) });
+                const pj = await pr.json(); if (pj && pj.ok && Array.isArray(pj.points)) { window._previewLocal = pj.points; redrawCanvas(); }
+              } catch {}
             }
           }
         } catch (e) {
@@ -679,8 +692,14 @@
         btnStart.onclick = () => {
           window._recPoints = []; window._recActive = true; btnFinish.disabled = false; btnSave.disabled = true; btnFollow.disabled = true; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Recording: 0 points';
         };
-        btnFinish.onclick = () => {
+        btnFinish.onclick = async () => {
           window._recActive = false; btnFinish.disabled = true; btnSave.disabled = false; btnFollow.disabled = false; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recorded: ${(window._recPoints||[]).length} points`;
+          // Keep preview as the final recorded path
+          try {
+            const arr = window._recPoints || [];
+            const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arr }) });
+            const pj = await pr.json(); if (pj && pj.ok && Array.isArray(pj.points)) { window._previewLocal = pj.points; redrawCanvas(); }
+          } catch {}
         };
         btnSave.onclick = async () => {
           const from_id = selFrom.value; const to_id = selTo.value; const points = window._recPoints || [];
@@ -689,8 +708,19 @@
           await loadGpsRoutes(); const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Saved route.'; btnSave.disabled = true; btnFollow.disabled = true;
         };
         btnFollow.onclick = async () => {
-          const from_id = selFrom.value; const to_id = selTo.value; await fetch('/api/gps_routes/follow', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id, to_id})}); await updateStatus();
+          // Removed direct follow from UI per requirement; reuse mission on-demand flow if desired
+          alert('Follow via On-Demand Navigation during Mission.');
         };
+        // Preview saved route when selects change
+        const previewSaved = async () => {
+          const from_id = selFrom.value; const to_id = selTo.value;
+          try {
+            const r = await fetch(`/api/gps_routes/local?from_id=${encodeURIComponent(from_id)}&to_id=${encodeURIComponent(to_id)}`);
+            const j = await r.json(); if (j && j.ok && Array.isArray(j.points)) { window._previewLocal = j.points; redrawCanvas(); }
+          } catch {}
+        };
+        selFrom.addEventListener('change', previewSaved);
+        selTo.addEventListener('change', previewSaved);
       })();
     </script>
   </body>

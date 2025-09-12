@@ -67,6 +67,9 @@ section { background:var(--panel); border:1px solid var(--border); border-radius
 #on-demand-buttons button { padding: 10px 14px; font-size: 14px; border-radius: 8px; min-width: 160px; }
 #on-demand-buttons button.in-progress { background: #e8f1ff; color: var(--accent); border-color: var(--accent); }
 
+/* Preview route on canvas */
+.route-preview { stroke: #10b981; }
+
 /* Tables */
 table { width:100%; border-collapse:collapse; }
 th, td { padding:6px; text-align:left; border-bottom:1px solid var(--border); font-size:13px; }
