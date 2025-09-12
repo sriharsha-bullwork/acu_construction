@@ -14,7 +14,7 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 
 
 DEFAULT_WP_FILE = \
-    "/workspaces/wayfinders/src/acu_construction/wp_follower/demo_wp.yaml"
+    "/home/bullwork/construction_ws/src/acu_construction/wp_follower/demo_wp.yaml"
 
 
 def yaw_to_quaternion(yaw_rad: float):
