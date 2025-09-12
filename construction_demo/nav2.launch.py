@@ -23,11 +23,19 @@ def generate_launch_description():
         'config_construction',
         'vamana_basic_nav_navigate_to_pose_no_replan.xml',
     ])
+    bt_xml_path_through = PathJoinSubstitution([
+        FindPackageShare('acu_construction'),
+        'config_construction',
+        'vamana_basic_nav_navigate_through_poses_no_replan.xml',
+    ])
 
     configured_params = RewrittenYaml(
         source_file=nav2_params,
         root_key='',
-        param_rewrites={'default_nav_to_pose_bt_xml': bt_xml_path},
+        param_rewrites={
+            'default_nav_to_pose_bt_xml': bt_xml_path,
+            'default_nav_through_poses_bt_xml': bt_xml_path_through,
+        },
         convert_types=True,
     )
 
