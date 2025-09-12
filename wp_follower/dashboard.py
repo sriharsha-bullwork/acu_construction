@@ -15,6 +15,7 @@ from rclpy.node import Node
 from rclpy.task import Future
 
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import NavSatFix, Imu
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import Path as NavPath
@@ -877,9 +878,10 @@ def create_app(topics: Optional[Dict] = None) -> Flask:
                 if not got_odom.done():
                     got_odom.set_result(True)
 
-            node.create_subscription(NavSatFix, topics_cfg.get('gps', '/gps/fix'), gps_cb, 10)
-            node.create_subscription(Imu, topics_cfg.get('imu', '/imu'), imu_cb, 10)
-            node.create_subscription(Odometry, topics_cfg.get('odom', '/odometry/global'), odom_cb, 10)
+            # Use sensor-data QoS for high-frequency sensor topics to avoid reliability mismatches
+            node.create_subscription(NavSatFix, topics_cfg.get('gps', '/gps/fix'), gps_cb, qos_profile=qos_profile_sensor_data)
+            node.create_subscription(Imu, topics_cfg.get('imu', '/imu'), imu_cb, qos_profile=qos_profile_sensor_data)
+            node.create_subscription(Odometry, topics_cfg.get('odom', '/odometry/global'), odom_cb, qos_profile=qos_profile_sensor_data)
             def plan_cb(msg: NavPath):
                 try:
                     pts = []
@@ -890,7 +892,9 @@ def create_app(topics: Optional[Dict] = None) -> Flask:
                     pass
                 if not got_plan.done():
                     got_plan.set_result(True)
-            node.create_subscription(NavPath, topics_cfg.get('plan', '/plan'), plan_cb, 10)
+            # Keep plan as reliable
+            qos_plan = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE)
+            node.create_subscription(NavPath, topics_cfg.get('plan', '/plan'), plan_cb, qos_profile=qos_plan)
             with ROS_SPIN_LOCK:
                 rclpy.spin_until_future_complete(node, got_gps, timeout_sec=timeout_sec)
                 rclpy.spin_until_future_complete(node, got_imu, timeout_sec=timeout_sec)
