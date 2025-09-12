@@ -67,6 +67,8 @@ class NavBridge:
         self._max_ang = float(os.environ.get('JOY_MAX_ANG', '1.0'))
         # GPS routes: map (from_id, to_id) -> list of {lat, lon, yaw_deg}
         self._gps_routes: Dict[Tuple[str, str], List[Dict]] = {}
+        # Track active GPS route pair if following one
+        self._active_gps_pair: Optional[Tuple[str, str]] = None
 
     # --- Waypoint management helpers ---
     def _gen_new_wp_id(self) -> str:
@@ -277,6 +279,7 @@ class NavBridge:
                 self._route_id = f"{from_id}->{to_id}"
                 self._route_total = len(poses)
                 self._route_current = 0
+                self._active_gps_pair = (str(from_id), str(to_id))
                 return {'ok': True, 'status': self._status, 'route_id': self._route_id}
             except Exception as e:
                 self._status = 'error'
@@ -423,6 +426,7 @@ class NavBridge:
                 self._route_current = None
                 self._status = 'idle'
                 self._last_error = None
+                self._active_gps_pair = None
                 return {'ok': True, 'status': self._status}
             except Exception as e:
                 self._status = 'error'
@@ -492,6 +496,7 @@ class NavBridge:
                     self._navigator.cancelTask()
                 # Mark as canceling; final status will settle on next poll
                 self._status = 'canceled'
+                self._active_gps_pair = None
                 return {'ok': True, 'status': self._status}
             except Exception as e:
                 self._status = 'error'
@@ -511,8 +516,8 @@ class NavBridge:
                 except Exception:
                     fb = None
 
-                # Capture progress info for routes
-                if self._mode == 'route':
+                # Capture progress info for routes (JSON or GPS) when available
+                if (self._route_total and self._route_total > 0) or self._active_gps_pair is not None or self._mode == 'route':
                     idx = None
                     if fb is not None and hasattr(fb, 'current_waypoint'):
                         try:
@@ -521,11 +526,19 @@ class NavBridge:
                             idx = None
                     if idx is None:
                         idx = self._route_current or 0
-                    self._paused = {
-                        'mode': 'route',
-                        'route_id': self._route_id,
-                        'index': max(0, int(idx)),
-                    }
+                    if self._active_gps_pair is not None:
+                        self._paused = {
+                            'mode': 'gps_route',
+                            'from': self._active_gps_pair[0],
+                            'to': self._active_gps_pair[1],
+                            'index': max(0, int(idx)),
+                        }
+                    else:
+                        self._paused = {
+                            'mode': 'route',
+                            'route_id': self._route_id,
+                            'index': max(0, int(idx)),
+                        }
                 else:  # single goal pause
                     self._paused = {
                         'mode': 'single',
@@ -571,7 +584,37 @@ class NavBridge:
                     self._route_current = None
                     return {'ok': True, 'status': self._status, 'goal_id': wp_id}
 
-                # Route resume
+                # GPS route resume
+                if paused.get('mode') == 'gps_route':
+                    from_id = paused.get('from'); to_id = paused.get('to')
+                    start_idx = int(paused.get('index', 0))
+                    key = (str(from_id), str(to_id))
+                    pts = self._gps_routes.get(key)
+                    if not pts or start_idx >= len(pts):
+                        self._status = 'succeeded'
+                        self._mode = 'none'
+                        self._route_id = None
+                        self._route_total = 0
+                        self._route_current = None
+                        self._active_gps_pair = None
+                        return {'ok': True, 'status': 'succeeded'}
+                    poses = []
+                    with ROS_SPIN_LOCK:
+                        for p in pts[start_idx:]:
+                            local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
+                            poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                        self._navigator.goThroughPoses(poses)
+                    self._last_goal_id = None
+                    self._status = 'active'
+                    self._last_error = None
+                    self._mode = 'mission' if getattr(self, '_mission_active', False) else 'route'
+                    self._route_id = f"{from_id}->{to_id}"
+                    self._route_total = len(poses)
+                    self._route_current = 0
+                    self._active_gps_pair = (str(from_id), str(to_id))
+                    return {'ok': True, 'status': self._status, 'route_id': self._route_id}
+
+                # JSON route resume
                 route_id = paused.get('route_id')
                 start_idx = int(paused.get('index', 0))
                 route = next((r for r in self._routes if r.get('id') == route_id), None)
@@ -596,15 +639,16 @@ class NavBridge:
                         local = gps_point_to_local(self._helper, w)
                         poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
 
-                    self._navigator.followWaypoints(poses)
+                    self._navigator.goThroughPoses(poses)
                 self._last_goal_id = None
                 self._status = 'active'
                 self._last_error = None
-                self._mode = 'route'
+                self._mode = 'mission' if getattr(self, '_mission_active', False) else 'route'
                 self._route_id = route_id
                 # Track progress for the resumed segment
                 self._route_total = len(poses)
                 self._route_current = 0
+                self._active_gps_pair = None
                 return {'ok': True, 'status': self._status, 'route_id': route_id}
             except Exception as e:
                 self._status = 'error'

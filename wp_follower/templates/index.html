@@ -336,7 +336,7 @@
           const resp = await fetch('/api/gps_routes');
           const data = await resp.json();
           const container = document.getElementById('gps-route-table-container'); container.innerHTML = '';
-          if (!Array.isArray(data) || data.length === 0) { const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No recorded GPS routes'; container.appendChild(empty); return; }
+          if (!Array.isArray(data) || data.length === 0) { const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No recorded GPS routes'; container.appendChild(empty); window._previewLocal = []; redrawCanvas(); return; }
           const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>From</th><th>To</th><th>Points</th><th>Actions</th></tr></thead>';
           const tbody = document.createElement('tbody');
           data.forEach(rt => {
@@ -346,7 +346,7 @@
             const tdS = document.createElement('td'); tdS.textContent = String(rt.size || 0);
             const tdA = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
             const del = document.createElement('button'); del.className='btn-delete'; del.textContent='✕'; del.title='Delete';
-            del.onclick = async () => { if (!confirm(`Delete route ${rt.from} -> ${rt.to} (and reverse)?`)) return; const r = await fetch('/api/gps_routes/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); const j = await r.json(); if (!j.ok) alert(j.error||'Delete failed'); await loadGpsRoutes(); window._previewLocal = []; redrawCanvas(); };
+            del.onclick = async () => { if (!confirm(`Delete route ${rt.from} -> ${rt.to} (and reverse)?`)) return; const r = await fetch('/api/gps_routes/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); const j = await r.json(); if (!j.ok) alert(j.error||'Delete failed'); await loadGpsRoutes(); };
             actions.appendChild(del); tdA.appendChild(actions);
             tr.appendChild(tdF); tr.appendChild(tdT); tr.appendChild(tdS); tr.appendChild(tdA); tbody.appendChild(tr);
           });
@@ -355,9 +355,12 @@
           // If no preview yet, preview first route
           try {
             const selFrom = document.getElementById('route-from'); const selTo = document.getElementById('route-to');
-            if (data.length && selFrom && selTo) {
-              if (!selFrom.value || !selTo.value) { selFrom.value = data[0].from; selTo.value = data[0].to; }
-              const r = await fetch(`/api/gps_routes/local?from_id=${encodeURIComponent(selFrom.value)}&to_id=${encodeURIComponent(selTo.value)}`);
+            // Always preview the first available route; also sync selects to it
+            if (data.length) {
+              const first = data[0];
+              if (selFrom) selFrom.value = first.from;
+              if (selTo) selTo.value = first.to;
+              const r = await fetch(`/api/gps_routes/local?from_id=${encodeURIComponent(first.from)}&to_id=${encodeURIComponent(first.to)}`);
               const j = await r.json(); if (j && j.ok && Array.isArray(j.points)) { window._previewLocal = j.points; redrawCanvas(); }
             }
           } catch {}
@@ -533,6 +536,7 @@
           } else {
             await loadWaypoints();
             await loadRoutes();
+            await loadGpsRoutes();
             await loadWaypointsLocal();
             redrawCanvas();
           }
