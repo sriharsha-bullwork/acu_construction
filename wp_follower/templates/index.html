@@ -14,16 +14,24 @@
           <span id="pose" class="mono">pose: --</span>
         </div>
       </div>
-      <div class="header-right buttons">
-        <button id="saveCurrentBtn" title="Add Waypoint at Current Pose">Save Current</button>
-        <button id="missionStartBtn" title="Enable mission mode">Start Mission</button>
-        <button id="missionStopBtn" title="Stop mission and reset">Stop Mission</button>
-        <button id="pauseBtn" title="Pause current task">Pause</button>
-        <button id="resumeBtn" title="Resume paused task">Resume</button>
-        <button id="cancelBtn" title="Cancel current task">Cancel</button>
-        <button id="exportBtn" title="Export waypoints/routes">Export</button>
-        <label for="importFile" class="button-like" title="Import waypoints/routes">Import</label>
-        <input type="file" id="importFile" accept="application/json,.json" style="display:none" />
+      <div class="header-right">
+        <div class="buttons">
+          <button id="saveCurrentBtn" title="Add Waypoint at Current Pose">Save Current</button>
+        </div>
+        <div class="buttons">
+          <button id="missionStartBtn" title="Enable mission mode">Start Mission</button>
+          <button id="missionStopBtn" title="Stop mission and reset">Stop Mission</button>
+        </div>
+        <div class="buttons">
+          <button id="pauseBtn" title="Pause current task">Pause</button>
+          <button id="resumeBtn" title="Resume paused task">Resume</button>
+          <button id="cancelBtn" title="Cancel current task">Cancel</button>
+        </div>
+        <div class="buttons">
+          <button id="exportBtn" title="Export waypoints/routes">Export</button>
+          <label for="importFile" class="button-like" title="Import waypoints/routes">Import</label>
+          <input type="file" id="importFile" accept="application/json,.json" style="display:none" />
+        </div>
       </div>
     </header>
 
@@ -302,6 +310,29 @@
         `;
         const prev = missionMode;
         missionMode = (s.mode === 'mission');
+        // Toggle button states
+        const startBtn = document.getElementById('missionStartBtn');
+        const stopBtn = document.getElementById('missionStopBtn');
+        if (startBtn) startBtn.disabled = !!missionMode;
+        if (stopBtn) stopBtn.disabled = !missionMode;
+        // Pause/Resume/Cancel availability
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+        if (s.status === 'active') {
+          if (pauseBtn) pauseBtn.disabled = false;
+          if (resumeBtn) resumeBtn.disabled = true;
+          if (cancelBtn) cancelBtn.disabled = false;
+        } else if (s.status === 'paused') {
+          if (pauseBtn) pauseBtn.disabled = true;
+          if (resumeBtn) resumeBtn.disabled = false;
+          if (cancelBtn) cancelBtn.disabled = false;
+        } else {
+          if (pauseBtn) pauseBtn.disabled = true;
+          if (resumeBtn) resumeBtn.disabled = true;
+          if (cancelBtn) cancelBtn.disabled = true;
+        }
+
         if (prev !== missionMode) {
           applyGoEnabled();
           // Toggle panels
@@ -318,6 +349,8 @@
             const odb = document.getElementById('on-demand-buttons'); if (odb) odb.innerHTML = '';
           }
         }
+        // Highlight active on-demand goal
+        updateOnDemandHighlight(s);
       }
 
       async function renderOnDemandButtons() {
@@ -330,11 +363,23 @@
             const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No waypoints loaded'; odb.appendChild(empty); return;
           }
           data.forEach(wp => {
-            const b = document.createElement('button'); b.textContent = wp.name || wp.id;
+            const b = document.createElement('button'); b.textContent = wp.name || wp.id; b.dataset.wpId = wp.id;
             b.onclick = async () => { const r = await fetch(`/api/goal/${wp.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to send goal'); await updateStatus(); };
             odb.appendChild(b);
           });
         } catch {}
+      }
+
+      function updateOnDemandHighlight(s) {
+        const odb = document.getElementById('on-demand-buttons'); if (!odb) return;
+        const buttons = odb.querySelectorAll('button');
+        buttons.forEach(btn => {
+          if (s && s.goal_id && btn.dataset.wpId === String(s.goal_id) && s.status === 'active') {
+            btn.classList.add('in-progress');
+          } else {
+            btn.classList.remove('in-progress');
+          }
+        });
       }
 
       document.getElementById('cancelBtn').onclick = async () => {

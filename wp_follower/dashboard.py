@@ -414,7 +414,8 @@ class NavBridge:
                     self._last_goal_id = wp_id
                     self._status = 'active'
                     self._last_error = None
-                    self._mode = 'single'
+                    # Preserve mission mode if mission is active
+                    self._mode = 'mission' if getattr(self, '_mission_active', False) else 'single'
                     self._route_id = None
                     self._route_total = 0
                     self._route_current = None
