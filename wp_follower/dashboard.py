@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from flask import Flask, jsonify, request, Response, render_template, make_response
+import argparse
 
 import rclpy
 from rclpy.node import Node
@@ -40,7 +41,7 @@ class NavBridge:
     - Tracks last goal and status for polling
     """
 
-    def __init__(self, waypoints: List[Dict], routes: List[Dict]):
+    def __init__(self, waypoints: List[Dict], routes: List[Dict], topics: Optional[Dict] = None):
         if not rclpy.ok():
             rclpy.init()
 
@@ -48,6 +49,7 @@ class NavBridge:
         self._navigator = BasicNavigator()
         self._waypoints = waypoints
         self._routes = routes  # list of {id, waypoint_ids: [..]}
+        self._topics = topics or {}
 
         self._lock = threading.Lock()
         self._last_goal_id: Optional[str] = None
@@ -62,7 +64,8 @@ class NavBridge:
         # Mission flag
         self._mission_active: bool = False
         # Joystick/cmd_vel publisher
-        self._cmd_pub = self._helper.create_publisher(Twist, '/cmd_vel', 10)
+        cmd_topic = self._topics.get('cmd_vel', '/cmd_vel')
+        self._cmd_pub = self._helper.create_publisher(Twist, cmd_topic, 10)
         self._max_lin = float(os.environ.get('JOY_MAX_LIN', '0.5'))
         self._max_ang = float(os.environ.get('JOY_MAX_ANG', '1.0'))
         # GPS routes: map (from_id, to_id) -> list of {lat, lon, yaw_deg}
@@ -607,7 +610,8 @@ class NavBridge:
                         return {'ok': True, 'status': 'succeeded'}
                     poses = []
                     with ROS_SPIN_LOCK:
-                        for p in pts[start_idx:]:
+                        sidx = min(len(pts) - 1, max(0, start_idx + 1))
+                        for p in pts[sidx:]:
                             local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
                             poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
                         self._navigator.goThroughPoses(poses)
@@ -639,7 +643,8 @@ class NavBridge:
 
                 poses = []
                 with ROS_SPIN_LOCK:
-                    for wid in wp_ids[start_idx:]:
+                    sidx = min(len(wp_ids) - 1, max(0, start_idx + 1))
+                    for wid in wp_ids[sidx:]:
                         w = self._find_wp(wid)
                         if not w:
                             return {'ok': False, 'error': f'waypoint id not found in route: {wid}'}
@@ -779,7 +784,7 @@ def load_waypoints_and_routes(json_path: Path) -> Tuple[List[Dict], List[Dict]]:
     return wps, routes
 
 
-def create_app() -> Flask:
+def create_app(topics: Optional[Dict] = None) -> Flask:
     base_dir = Path(__file__).parent
     app = Flask(
         __name__,
@@ -797,7 +802,18 @@ def create_app() -> Flask:
         waypoints, routes = load_waypoints_and_routes(json_path)
     else:
         waypoints, routes = [], []
-    nav = NavBridge(waypoints, routes)
+    # Topic configuration (can be overridden by args/env)
+    topics_cfg = {
+        'gps': os.environ.get('GPS_TOPIC', '/gps/fix'),
+        'imu': os.environ.get('IMU_TOPIC', '/imu'),
+        'odom': os.environ.get('ODOM_TOPIC', '/odometry/global'),
+        'plan': os.environ.get('PLAN_TOPIC', '/plan'),
+        'cmd_vel': os.environ.get('CMD_VEL_TOPIC', '/cmd_vel'),
+    }
+    if topics:
+        topics_cfg.update({k: v for k, v in topics.items() if v})
+
+    nav = NavBridge(waypoints, routes, topics=topics_cfg)
 
     # On-demand telemetry sampling to avoid concurrent rclpy spinning
     _last_gps: Optional[Dict] = None
@@ -861,9 +877,9 @@ def create_app() -> Flask:
                 if not got_odom.done():
                     got_odom.set_result(True)
 
-            node.create_subscription(NavSatFix, '/gps/fix', gps_cb, 10)
-            node.create_subscription(Imu, '/imu', imu_cb, 10)
-            node.create_subscription(Odometry, '/odometry/global', odom_cb, 10)
+            node.create_subscription(NavSatFix, topics_cfg.get('gps', '/gps/fix'), gps_cb, 10)
+            node.create_subscription(Imu, topics_cfg.get('imu', '/imu'), imu_cb, 10)
+            node.create_subscription(Odometry, topics_cfg.get('odom', '/odometry/global'), odom_cb, 10)
             def plan_cb(msg: NavPath):
                 try:
                     pts = []
@@ -874,7 +890,7 @@ def create_app() -> Flask:
                     pass
                 if not got_plan.done():
                     got_plan.set_result(True)
-            node.create_subscription(NavPath, '/plan', plan_cb, 10)
+            node.create_subscription(NavPath, topics_cfg.get('plan', '/plan'), plan_cb, 10)
             with ROS_SPIN_LOCK:
                 rclpy.spin_until_future_complete(node, got_gps, timeout_sec=timeout_sec)
                 rclpy.spin_until_future_complete(node, got_imu, timeout_sec=timeout_sec)
@@ -921,6 +937,21 @@ def create_app() -> Flask:
     @app.get('/api/gps_routes')
     def api_gps_routes():
         return jsonify(nav.list_gps_routes())
+
+    @app.get('/api/gps_routes/local_all')
+    def api_gps_routes_local_all():
+        try:
+            out = []
+            with ROS_SPIN_LOCK:
+                for (frm, to), pts in nav._gps_routes.items():
+                    locals_ = []
+                    for p in pts:
+                        local = gps_point_to_local(nav._helper, p)
+                        locals_.append({'x': float(local['x']), 'y': float(local['y'])})
+                    out.append({'from': frm, 'to': to, 'points': locals_})
+            return jsonify({'ok': True, 'routes': out})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
 
     @app.get('/api/waypoints_local')
     def api_waypoints_local():
@@ -1124,6 +1155,24 @@ def create_app() -> Flask:
 
 
 if __name__ == '__main__':
+    # Parse optional topic overrides
+    parser = argparse.ArgumentParser(description='Waypoint Dashboard')
+    parser.add_argument('--gps-topic', default=os.environ.get('GPS_TOPIC'), help='GPS fix topic (NavSatFix)')
+    parser.add_argument('--imu-topic', default=os.environ.get('IMU_TOPIC'), help='IMU topic (sensor_msgs/Imu)')
+    parser.add_argument('--odom-topic', default=os.environ.get('ODOM_TOPIC'), help='Odometry topic (nav_msgs/Odometry)')
+    parser.add_argument('--plan-topic', default=os.environ.get('PLAN_TOPIC'), help='Global plan topic (nav_msgs/Path)')
+    parser.add_argument('--cmd-vel-topic', default=os.environ.get('CMD_VEL_TOPIC'), help='cmd_vel topic (geometry_msgs/Twist)')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', '5000')), help='HTTP port')
+    args = parser.parse_args()
+
+    topics = {
+        'gps': args.gps_topic,
+        'imu': args.imu_topic,
+        'odom': args.odom_topic,
+        'plan': args.plan_topic,
+        'cmd_vel': args.cmd_vel_topic,
+    }
+
     # Run Flask app without reloader to avoid duplicate rclpy init
-    app = create_app()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')), debug=False)
+    app = create_app(topics=topics)
+    app.run(host='0.0.0.0', port=args.port, debug=False)
