@@ -65,6 +65,8 @@ class NavBridge:
         self._cmd_pub = self._helper.create_publisher(Twist, '/cmd_vel', 10)
         self._max_lin = float(os.environ.get('JOY_MAX_LIN', '0.5'))
         self._max_ang = float(os.environ.get('JOY_MAX_ANG', '1.0'))
+        # GPS routes: map (from_id, to_id) -> list of {lat, lon, yaw_deg}
+        self._gps_routes: Dict[Tuple[str, str], List[Dict]] = {}
 
     # --- Waypoint management helpers ---
     def _gen_new_wp_id(self) -> str:
@@ -148,6 +150,92 @@ class NavBridge:
             }
             for r in self._routes
         ]
+
+    def list_gps_routes(self) -> List[Dict]:
+        with self._lock:
+            out = []
+            for (frm, to), pts in self._gps_routes.items():
+                out.append({'from': frm, 'to': to, 'size': len(pts)})
+            return out
+
+    def save_gps_route(self, from_id: str, to_id: str, points: List[Dict], tolerance_m: float = 2.0) -> Dict:
+        """Save a GPS route between two waypoints, also store reverse.
+
+        Points are expected as [{lat, lon, yaw_deg}]. If start/end are not near
+        the waypoints' GPS (within tolerance_m), the route is extended by
+        prepending/appending the waypoint GPS as straight segments.
+        """
+        with self._lock:
+            if not from_id or not to_id:
+                return {'ok': False, 'error': 'missing from_id/to_id'}
+            if not isinstance(points, list) or len(points) < 1:
+                return {'ok': False, 'error': 'points must be non-empty list'}
+            w_from = self._find_wp(from_id)
+            w_to = self._find_wp(to_id)
+            if not w_from or not w_to:
+                return {'ok': False, 'error': 'from/to waypoint not found'}
+
+            def haversine_m(lat1, lon1, lat2, lon2):
+                from math import radians, sin, cos, sqrt, atan2
+                R = 6371000.0
+                dlat = radians(lat2 - lat1)
+                dlon = radians(lon2 - lon1)
+                a = sin(dlat/2)**2 + cos(radians(lat1))*cos(radians(lat2))*sin(dlon/2)**2
+                c = 2 * atan2(sqrt(a), sqrt(1 - a))
+                return R * c
+
+            cleaned = []
+            for p in points:
+                if isinstance(p, dict) and 'lat' in p and 'lon' in p:
+                    cleaned.append({'lat': float(p['lat']), 'lon': float(p['lon']), 'yaw_deg': float(p.get('yaw_deg', 0.0))})
+            if not cleaned:
+                return {'ok': False, 'error': 'no valid points provided'}
+
+            # Ensure connection from waypoint to first point
+            d0 = haversine_m(float(w_from['lat']), float(w_from['lon']), cleaned[0]['lat'], cleaned[0]['lon'])
+            if d0 > tolerance_m:
+                cleaned = [{'lat': float(w_from['lat']), 'lon': float(w_from['lon']), 'yaw_deg': float(w_from.get('yaw_deg', 0.0))}] + cleaned
+            # Ensure connection to end waypoint
+            de = haversine_m(cleaned[-1]['lat'], cleaned[-1]['lon'], float(w_to['lat']), float(w_to['lon']))
+            if de > tolerance_m:
+                cleaned = cleaned + [{'lat': float(w_to['lat']), 'lon': float(w_to['lon']), 'yaw_deg': float(w_to.get('yaw_deg', 0.0))}]
+
+            key = (str(from_id), str(to_id))
+            self._gps_routes[key] = cleaned
+            # Also store reverse with yaw rotated by 180
+            rev = []
+            for p in reversed(cleaned):
+                yaw = (float(p.get('yaw_deg', 0.0)) + 180.0) % 360.0
+                rev.append({'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': yaw})
+            self._gps_routes[(str(to_id), str(from_id))] = rev
+            return {'ok': True, 'size': len(cleaned)}
+
+    def follow_gps_route(self, from_id: str, to_id: str) -> Dict:
+        with self._lock:
+            key = (str(from_id), str(to_id))
+            pts = self._gps_routes.get(key)
+            if not pts:
+                return {'ok': False, 'error': 'gps route not found'}
+            try:
+                poses = []
+                with ROS_SPIN_LOCK:
+                    for p in pts:
+                        local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
+                        poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                    self._navigator.followWaypoints(poses)
+                self._last_goal_id = None
+                self._status = 'active'
+                self._last_error = None
+                # Keep mission mode if active
+                self._mode = 'mission' if getattr(self, '_mission_active', False) else 'route'
+                self._route_id = f"{from_id}->{to_id}"
+                self._route_total = len(poses)
+                self._route_current = 0
+                return {'ok': True, 'status': self._status, 'route_id': self._route_id}
+            except Exception as e:
+                self._status = 'error'
+                self._last_error = str(e)
+                return {'ok': False, 'error': str(e)}
 
     def publish_cmd_vel(self, lx_norm: float, az_norm: float) -> Dict:
         """Publish normalized cmd_vel from joystick to /cmd_vel.
@@ -303,6 +391,9 @@ class NavBridge:
             return {
                 'waypoints': list(self._waypoints),
                 'routes': list(self._routes),
+                'gps_routes': [
+                    {'from': k[0], 'to': k[1], 'points': list(v)} for k, v in self._gps_routes.items()
+                ],
             }
 
     def import_data(self, data: Dict) -> Dict:
@@ -333,6 +424,21 @@ class NavBridge:
             # Update
             self._waypoints = list(wps)
             self._routes = routes
+            # gps_routes
+            self._gps_routes = {}
+            gps_routes_raw = data.get('gps_routes', [])
+            if isinstance(gps_routes_raw, list):
+                for gr in gps_routes_raw:
+                    if isinstance(gr, dict) and 'from' in gr and 'to' in gr and isinstance(gr.get('points'), list):
+                        key = (str(gr['from']), str(gr['to']))
+                        pts = []
+                        for p in gr['points']:
+                            try:
+                                pts.append({'lat': float(p['lat']), 'lon': float(p['lon']), 'yaw_deg': float(p.get('yaw_deg', 0.0))})
+                            except Exception:
+                                continue
+                        if pts:
+                            self._gps_routes[key] = pts
             return {'ok': True}
 
     def cancel(self) -> Dict:
@@ -717,6 +823,10 @@ def create_app() -> Flask:
     def api_routes():
         return jsonify(nav.list_routes())
 
+    @app.get('/api/gps_routes')
+    def api_gps_routes():
+        return jsonify(nav.list_gps_routes())
+
     @app.get('/api/waypoints_local')
     def api_waypoints_local():
         return jsonify(nav.list_waypoints_local())
@@ -724,6 +834,19 @@ def create_app() -> Flask:
     @app.post('/api/route/<route_id>')
     def api_start_route(route_id: str):
         return jsonify(nav.start_route(route_id))
+
+    @app.post('/api/gps_routes/save')
+    def api_gps_routes_save():
+        payload = request.get_json(silent=True) or {}
+        frm = payload.get('from_id'); to = payload.get('to_id'); points = payload.get('points') or []
+        tol = float(payload.get('tolerance_m', 2.0))
+        return jsonify(nav.save_gps_route(str(frm), str(to), points, tolerance_m=tol))
+
+    @app.post('/api/gps_routes/follow')
+    def api_gps_routes_follow():
+        payload = request.get_json(silent=True) or {}
+        frm = payload.get('from_id'); to = payload.get('to_id')
+        return jsonify(nav.follow_gps_route(str(frm), str(to)))
 
     @app.post('/api/cancel')
     def api_cancel():

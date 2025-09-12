@@ -57,6 +57,23 @@
 
           <h2>Routes</h2>
           <div id="route-table-container"></div>
+          <h3>Record Route</h3>
+          <div class="settings-grid">
+            <label for="route-from">From</label>
+            <select id="route-from"></select>
+            <label for="route-to">To</label>
+            <select id="route-to"></select>
+          </div>
+          <div class="buttons">
+            <button id="btn-start-recording">Start Recording</button>
+            <button id="btn-finish-recording" disabled>Finish Recording</button>
+            <button id="btn-save-route" disabled>Save Route</button>
+            <button id="btn-follow-route" disabled>Follow Route</button>
+          </div>
+          <div id="recording-status" class="recording-status mono"></div>
+
+          <h3>Recorded Routes</h3>
+          <div id="gps-route-table-container"></div>
         </div>
 
         <div id="mission-mode-panel" class="hidden">
@@ -248,7 +265,7 @@
           localWps = [];
         }
       }
-      async function loadWaypoints() {
+  async function loadWaypoints() {
         const resp = await fetch('/api/waypoints');
         const data = await resp.json();
         const container = document.getElementById('wp-table-container');
@@ -271,11 +288,21 @@
           });
           table.appendChild(tbody); container.appendChild(table);
         }
+        // Populate selects for recording
+        const selFrom = document.getElementById('route-from');
+        const selTo = document.getElementById('route-to');
+        if (selFrom && selTo) {
+          selFrom.innerHTML = ''; selTo.innerHTML = '';
+          (Array.isArray(data) ? data : []).forEach(w => {
+            const o1 = document.createElement('option'); o1.value = w.id; o1.textContent = w.name || w.id; selFrom.appendChild(o1);
+            const o2 = document.createElement('option'); o2.value = w.id; o2.textContent = w.name || w.id; selTo.appendChild(o2);
+          });
+        }
         const ms = document.getElementById('missionStartBtn'); if (ms) ms.disabled = !(Array.isArray(data) && data.length > 0);
         applyGoEnabled();
       }
 
-      async function loadRoutes() {
+  async function loadRoutes() {
         const resp = await fetch('/api/routes');
         const data = await resp.json();
         const container = document.getElementById('route-table-container'); container.innerHTML = '';
@@ -292,6 +319,28 @@
           tr.appendChild(tdName); tr.appendChild(tdMeta); tr.appendChild(tdAct); tbody.appendChild(tr);
         });
         table.appendChild(tbody); container.appendChild(table);
+      }
+
+      async function loadGpsRoutes() {
+        try {
+          const resp = await fetch('/api/gps_routes');
+          const data = await resp.json();
+          const container = document.getElementById('gps-route-table-container'); container.innerHTML = '';
+          if (!Array.isArray(data) || data.length === 0) { const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No recorded GPS routes'; container.appendChild(empty); return; }
+          const table = document.createElement('table'); table.innerHTML = '<thead><tr><th>From</th><th>To</th><th>Points</th><th>Actions</th></tr></thead>';
+          const tbody = document.createElement('tbody');
+          data.forEach(rt => {
+            const tr = document.createElement('tr');
+            const tdF = document.createElement('td'); tdF.textContent = rt.from;
+            const tdT = document.createElement('td'); tdT.textContent = rt.to;
+            const tdS = document.createElement('td'); tdS.textContent = String(rt.size || 0);
+            const tdA = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
+            const btn = document.createElement('button'); btn.textContent = 'Follow'; btn.onclick = async () => { await fetch('/api/gps_routes/follow', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id: rt.from, to_id: rt.to})}); await updateStatus(); };
+            actions.appendChild(btn); tdA.appendChild(actions);
+            tr.appendChild(tdF); tr.appendChild(tdT); tr.appendChild(tdS); tr.appendChild(tdA); tbody.appendChild(tr);
+          });
+          table.appendChild(tbody); container.appendChild(table);
+        } catch {}
       }
 
       async function updateStatus() {
@@ -507,6 +556,20 @@
             lastPlan = t.plan;
             redrawCanvas();
           }
+          // Route recording (frontend sampling)
+          if (window._recActive && t && t.gps && typeof t.heading_deg === 'number') {
+            const pt = { lat: Number(t.gps.lat), lon: Number(t.gps.lon), yaw_deg: Number(t.heading_deg) };
+            const arr = window._recPoints || (window._recPoints = []);
+            const last = arr.length ? arr[arr.length - 1] : null;
+            const distM = (a,b) => {
+              const R=6371000.0, toRad=Math.PI/180; const dlat=(b.lat-a.lat)*toRad, dlon=(b.lon-a.lon)*toRad; const la1=a.lat*toRad, la2=b.lat*toRad; const s = Math.sin(dlat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dlon/2)**2; return 2*R*Math.atan2(Math.sqrt(s), Math.sqrt(1-s));
+            };
+            const density = window._recDensityM || 0.5;
+            if (!last || distM({lat:last.lat,lon:last.lon},{lat:pt.lat,lon:pt.lon}) >= density) {
+              arr.push(pt);
+              const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recording: ${arr.length} points`;
+            }
+          }
         } catch (e) {
           // ignore transient errors
         }
@@ -514,6 +577,7 @@
       setInterval(updateTelemetry, 1000);
       loadWaypoints();
       loadRoutes();
+      loadGpsRoutes();
       loadWaypointsLocal();
       updateStatus();
       applyGoEnabled();
@@ -599,6 +663,34 @@
         joy.addEventListener('pointerup', endPointer);
         joy.addEventListener('pointercancel', endPointer);
         joy.addEventListener('pointerleave', endPointer);
+      })();
+
+      // Recording controls
+      (function initRecording(){
+        const btnStart = document.getElementById('btn-start-recording');
+        const btnFinish = document.getElementById('btn-finish-recording');
+        const btnSave = document.getElementById('btn-save-route');
+        const btnFollow = document.getElementById('btn-follow-route');
+        const selFrom = document.getElementById('route-from');
+        const selTo = document.getElementById('route-to');
+        if (!btnStart || !btnFinish || !btnSave || !btnFollow || !selFrom || !selTo) return;
+        window._recActive = false; window._recPoints = []; window._recDensityM = 0.5; const tolM = 2.0;
+
+        btnStart.onclick = () => {
+          window._recPoints = []; window._recActive = true; btnFinish.disabled = false; btnSave.disabled = true; btnFollow.disabled = true; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Recording: 0 points';
+        };
+        btnFinish.onclick = () => {
+          window._recActive = false; btnFinish.disabled = true; btnSave.disabled = false; btnFollow.disabled = false; const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recorded: ${(window._recPoints||[]).length} points`;
+        };
+        btnSave.onclick = async () => {
+          const from_id = selFrom.value; const to_id = selTo.value; const points = window._recPoints || [];
+          const r = await fetch('/api/gps_routes/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id, to_id, points, tolerance_m: tolM})});
+          const j = await r.json(); if (!j.ok) { alert(j.error||'Save failed'); return; }
+          await loadGpsRoutes(); const rs = document.getElementById('recording-status'); if (rs) rs.textContent = 'Saved route.'; btnSave.disabled = true; btnFollow.disabled = true;
+        };
+        btnFollow.onclick = async () => {
+          const from_id = selFrom.value; const to_id = selTo.value; await fetch('/api/gps_routes/follow', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({from_id, to_id})}); await updateStatus();
+        };
       })();
     </script>
   </body>

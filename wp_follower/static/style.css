@@ -76,6 +76,8 @@ td input:hover { border-color:#e1e4e8; }
 td input:focus { border-color:var(--accent); outline:none; }
 td .buttons { margin-top:0; justify-content:flex-end; }
 .btn-delete { background:#fdeaea; color:#d73a49; }
+/* Recording controls */
+.recording-status { color: var(--muted); font-size: 12px; margin-top: 6px; }
 
 /* Responsive tweaks */
 @media (max-width: 900px) {
