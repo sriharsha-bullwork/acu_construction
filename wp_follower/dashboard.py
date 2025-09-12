@@ -607,7 +607,8 @@ class NavBridge:
                         return {'ok': True, 'status': 'succeeded'}
                     poses = []
                     with ROS_SPIN_LOCK:
-                        for p in pts[start_idx:]:
+                        sidx = min(len(pts) - 1, max(0, start_idx + 1))
+                        for p in pts[sidx:]:
                             local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
                             poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
                         self._navigator.goThroughPoses(poses)
@@ -639,7 +640,8 @@ class NavBridge:
 
                 poses = []
                 with ROS_SPIN_LOCK:
-                    for wid in wp_ids[start_idx:]:
+                    sidx = min(len(wp_ids) - 1, max(0, start_idx + 1))
+                    for wid in wp_ids[sidx:]:
                         w = self._find_wp(wid)
                         if not w:
                             return {'ok': False, 'error': f'waypoint id not found in route: {wid}'}
@@ -921,6 +923,21 @@ def create_app() -> Flask:
     @app.get('/api/gps_routes')
     def api_gps_routes():
         return jsonify(nav.list_gps_routes())
+
+    @app.get('/api/gps_routes/local_all')
+    def api_gps_routes_local_all():
+        try:
+            out = []
+            with ROS_SPIN_LOCK:
+                for (frm, to), pts in nav._gps_routes.items():
+                    locals_ = []
+                    for p in pts:
+                        local = gps_point_to_local(nav._helper, p)
+                        locals_.append({'x': float(local['x']), 'y': float(local['y'])})
+                    out.append({'from': frm, 'to': to, 'points': locals_})
+            return jsonify({'ok': True, 'routes': out})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
 
     @app.get('/api/waypoints_local')
     def api_waypoints_local():

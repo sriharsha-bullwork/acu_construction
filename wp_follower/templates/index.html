@@ -128,7 +128,7 @@
         odomOrigin = { x: 0, y: 0 };
       }
 
-      function redrawCanvas() {
+  function redrawCanvas() {
         const canvas = document.getElementById('vehicleCanvas');
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
@@ -192,10 +192,27 @@
           ctx.stroke();
         }
 
-        // Preview GPS route (local points)
+        // Draw all saved GPS routes (thin green)
+        if (Array.isArray(window._allRoutesLocal)) {
+          ctx.strokeStyle = '#86efac';
+          ctx.lineWidth = 1.5;
+          window._allRoutesLocal.forEach(route => {
+            if (!route || !Array.isArray(route.points) || route.points.length < 2) return;
+            ctx.beginPath();
+            const p0 = worldToScreen(route.points[0]);
+            ctx.moveTo(p0.x, p0.y);
+            for (let i = 1; i < route.points.length; i++) {
+              const p = worldToScreen(route.points[i]);
+              ctx.lineTo(p.x, p.y);
+            }
+            ctx.stroke();
+          });
+        }
+
+        // Preview GPS route (highlighted green)
         if (window._previewLocal && window._previewLocal.length > 1) {
-          ctx.strokeStyle = '#10b981'; // green
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#10b981';
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
           const p0 = worldToScreen(window._previewLocal[0]);
           ctx.moveTo(p0.x, p0.y);
@@ -331,7 +348,7 @@
         table.appendChild(tbody); container.appendChild(table);
       }
 
-      async function loadGpsRoutes() {
+  async function loadGpsRoutes() {
         try {
           const resp = await fetch('/api/gps_routes');
           const data = await resp.json();
@@ -354,15 +371,26 @@
 
           // If no preview yet, preview first route
           try {
+            // Fetch all routes (local) for drawing
+            const all = await fetch('/api/gps_routes/local_all');
+            const aj = await all.json();
+            if (aj && aj.ok && Array.isArray(aj.routes)) {
+              window._allRoutesLocal = aj.routes;
+            } else {
+              window._allRoutesLocal = [];
+            }
+            // Pick first as preview and sync selects
             const selFrom = document.getElementById('route-from'); const selTo = document.getElementById('route-to');
-            // Always preview the first available route; also sync selects to it
             if (data.length) {
               const first = data[0];
               if (selFrom) selFrom.value = first.from;
               if (selTo) selTo.value = first.to;
               const r = await fetch(`/api/gps_routes/local?from_id=${encodeURIComponent(first.from)}&to_id=${encodeURIComponent(first.to)}`);
-              const j = await r.json(); if (j && j.ok && Array.isArray(j.points)) { window._previewLocal = j.points; redrawCanvas(); }
+              const j = await r.json(); if (j && j.ok && Array.isArray(j.points)) { window._previewLocal = j.points; }
+            } else {
+              window._previewLocal = [];
             }
+            redrawCanvas();
           } catch {}
         } catch {}
       }
