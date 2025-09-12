@@ -39,9 +39,6 @@
           <div class="vehicle-panel">
             <canvas id="vehicleCanvas"></canvas>
           </div>
-          <div id="joystick-container">
-            <div id="joystick" class="joystick"><div id="stick" class="stick"></div></div>
-          </div>
         </div>
       </section>
       <section class="right">
@@ -52,21 +49,15 @@
 
           <h2>Routes</h2>
           <div id="route-table-container"></div>
-
-          <h2>Storage</h2>
-          <div class="buttons">
-            <button id="btn-export">Export (JSON)</button>
-            <label class="file-input">
-              <input type="file" id="file-import" accept="application/json" style="display:none" />
-              <span id="btn-import" class="button-like">Import (JSON)</span>
-            </label>
-          </div>
         </div>
 
         <div id="mission-mode-panel" class="hidden">
           <h2>On-Demand Navigation</h2>
           <div id="on-demand-buttons" class="buttons"></div>
         </div>
+
+        <h2>Joystick</h2>
+        <div id="joystick" class="joystick"><div id="stick" class="stick"></div></div>
       </section>
     </main>
 
@@ -74,12 +65,6 @@
       // Only enable Go buttons while mission mode is active
       let missionMode = false;
       function applyGoEnabled() {
-        const enabled = !!missionMode;
-        document.querySelectorAll('.go-btn').forEach(btn => {
-          btn.disabled = !enabled;
-          if (!enabled) btn.title = 'Start Mission to enable manual goals';
-          else btn.title = 'Send goal to this waypoint';
-        });
         // Enable Save Current only when NOT in mission mode
         const saveBtn = document.getElementById('saveCurrentBtn');
         if (saveBtn) saveBtn.disabled = !!missionMode;
@@ -265,18 +250,16 @@
           empty.textContent = 'No waypoints loaded. Use Import to load a waypoints.json file.'; container.appendChild(empty);
         } else {
           const table = document.createElement('table');
-          table.innerHTML = '<thead><tr><th>Name</th><th>Coords</th><th>Actions</th></tr></thead>';
+          table.innerHTML = '<thead><tr><th>Name</th><th>Actions</th></tr></thead>';
           const tbody = document.createElement('tbody');
           data.forEach(wp => {
             const tr = document.createElement('tr');
             const tdName = document.createElement('td'); tdName.textContent = `${wp.name || wp.id}`;
-            const tdMeta = document.createElement('td'); tdMeta.className='mono'; tdMeta.textContent = `lat ${Number(wp.lat).toFixed(6)}, lon ${Number(wp.lon).toFixed(6)}, yaw ${Number(wp.yaw_deg || 0).toFixed(1)}°`;
             const tdAct = document.createElement('td'); const actions = document.createElement('div'); actions.className='buttons';
-            const go = document.createElement('button'); go.className='go-btn'; go.textContent='Go'; go.onclick = async () => { const r = await fetch(`/api/goal/${wp.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to send goal'); await updateStatus(); }; go.disabled = !missionMode; go.title = missionMode ? 'Send goal' : 'Start Mission to enable manual goals';
             const rn = document.createElement('button'); rn.textContent='Rename'; rn.onclick = async () => { const newName = prompt('New name for waypoint', wp.name || wp.id); if (!newName) return; const r = await fetch(`/api/waypoints/rename/${wp.id}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name:newName})}); const j = await r.json(); if (!j.ok) alert(j.error||'Rename failed'); await loadWaypoints(); await loadWaypointsLocal(); redrawCanvas(); };
-            const del = document.createElement('button'); del.className='btn-delete'; del.textContent='Delete'; del.onclick = async () => { if (!confirm(`Delete waypoint ${wp.name || wp.id}?`)) return; const r = await fetch(`/api/waypoints/${wp.id}`, {method:'DELETE'}); const j = await r.json(); if (!j.ok) alert(j.error||'Delete failed'); await loadWaypoints(); await loadWaypointsLocal(); redrawCanvas(); };
-            actions.appendChild(go); actions.appendChild(rn); actions.appendChild(del); tdAct.appendChild(actions);
-            tr.appendChild(tdName); tr.appendChild(tdMeta); tr.appendChild(tdAct); tbody.appendChild(tr);
+            const del = document.createElement('button'); del.className='btn-delete'; del.textContent='✕'; del.title='Delete'; del.onclick = async () => { if (!confirm(`Delete waypoint ${wp.name || wp.id}?`)) return; const r = await fetch(`/api/waypoints/${wp.id}`, {method:'DELETE'}); const j = await r.json(); if (!j.ok) alert(j.error||'Delete failed'); await loadWaypoints(); await loadWaypointsLocal(); redrawCanvas(); };
+            actions.appendChild(rn); actions.appendChild(del); tdAct.appendChild(actions);
+            tr.appendChild(tdName); tr.appendChild(tdAct); tbody.appendChild(tr);
           });
           table.appendChild(tbody); container.appendChild(table);
         }
@@ -317,11 +300,41 @@
           <div><strong>ETA:</strong> ${eta}</div>
           <div><strong>Route Progress:</strong> ${prog}</div>
         `;
-
-        // Enable/disable Go buttons based on mission mode
         const prev = missionMode;
         missionMode = (s.mode === 'mission');
-        if (prev !== missionMode) applyGoEnabled();
+        if (prev !== missionMode) {
+          applyGoEnabled();
+          // Toggle panels
+          const edit = document.getElementById('edit-mode-panel');
+          const mission = document.getElementById('mission-mode-panel');
+          if (missionMode) {
+            if (edit) edit.classList.add('hidden');
+            if (mission) mission.classList.remove('hidden');
+            await renderOnDemandButtons();
+          } else {
+            if (mission) mission.classList.add('hidden');
+            if (edit) edit.classList.remove('hidden');
+            // Clear on-demand
+            const odb = document.getElementById('on-demand-buttons'); if (odb) odb.innerHTML = '';
+          }
+        }
+      }
+
+      async function renderOnDemandButtons() {
+        try {
+          const resp = await fetch('/api/waypoints');
+          const data = await resp.json();
+          const odb = document.getElementById('on-demand-buttons'); if (!odb) return;
+          odb.innerHTML = '';
+          if (!Array.isArray(data) || data.length === 0) {
+            const empty = document.createElement('div'); empty.className='empty'; empty.textContent='No waypoints loaded'; odb.appendChild(empty); return;
+          }
+          data.forEach(wp => {
+            const b = document.createElement('button'); b.textContent = wp.name || wp.id;
+            b.onclick = async () => { const r = await fetch(`/api/goal/${wp.id}`, {method:'POST'}); const j = await r.json(); if (!j.ok) alert(j.error||'Failed to send goal'); await updateStatus(); };
+            odb.appendChild(b);
+          });
+        } catch {}
       }
 
       document.getElementById('cancelBtn').onclick = async () => {
@@ -414,10 +427,8 @@
           e.target.value = '';
         }
       });
-      // Mirror header controls
+      // Mirror header control
       const btnAddWp = document.getElementById('btn-add-wp'); if (btnAddWp) btnAddWp.onclick = () => document.getElementById('saveCurrentBtn').click();
-      const btnExport = document.getElementById('btn-export'); if (btnExport) btnExport.onclick = () => document.getElementById('exportBtn').click();
-      const btnImport = document.getElementById('btn-import'); if (btnImport) btnImport.onclick = () => document.getElementById('importFile').click();
 
       setInterval(updateStatus, 1000);
       async function updateTelemetry() {
