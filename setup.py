@@ -18,6 +18,13 @@ setup(
             'launch/sim_nav2_waypoints.launch.py',
              'launch/sim_nav2_gps.launch.py',
              'launch/sim_nav2_gps_vamana.launch.py',
+            # Construction demo launch files
+            'construction_demo/nav2.launch.py',
+            'construction_demo/sensors.launch.py',
+            'construction_demo/dual_ekf_map_launch.py',
+            'construction_demo/ublox_mb+r_rover.launch.py',
+            'construction_demo/ublox_mb+r_base.launch.py',
+            'construction_demo/ntrip_client.launch.py',
         ]),
 
         # Extra params (keep your existing burger.yaml)
@@ -32,6 +39,14 @@ setup(
             'config/navigate_through_poses_no_replan.xml',
             'config/robot_localization.yaml',
             'config/tb3_nav2_gps.rviz',
+        ]),
+
+        # Construction-specific configs
+        ('share/' + package_name + '/config_construction', [
+            'config_construction/nav2_par.yaml',
+            'config_construction/dual_ekf_mapping.yaml',
+            'config_construction/vamana_basic_nav_navigate_to_pose_no_replan.xml',
+            'config_construction/vamana_basic_nav_navigate_through_poses_no_replan.xml',
         ]),
 
         # Vamana-specific Nav2 + RL config
@@ -74,6 +89,7 @@ setup(
             'maps/empty_world.yaml',
             'maps/empty_world.pgm',
         ]),
+        
     ],
     install_requires=['setuptools'],
     zip_safe=True,
