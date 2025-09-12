@@ -227,13 +227,21 @@ class NavBridge:
                 segs2 = interpolate_line(cleaned[-1]['lat'], cleaned[-1]['lon'], wlat2, wlon2) + [{'lat': wlat2, 'lon': wlon2}]
                 cleaned = cleaned + [{'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': brg2} for p in segs2]
 
+            # Recompute yaw along forward path
+            for i in range(len(cleaned)):
+                if i < len(cleaned) - 1:
+                    cleaned[i]['yaw_deg'] = bearing_deg(cleaned[i]['lat'], cleaned[i]['lon'], cleaned[i+1]['lat'], cleaned[i+1]['lon'])
+                elif i > 0:
+                    cleaned[i]['yaw_deg'] = cleaned[i-1]['yaw_deg']
             key = (str(from_id), str(to_id))
             self._gps_routes[key] = cleaned
-            # Also store reverse with yaw rotated by 180
-            rev = []
-            for p in reversed(cleaned):
-                yaw = (float(p.get('yaw_deg', 0.0)) + 180.0) % 360.0
-                rev.append({'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': yaw})
+            # Build reverse with recomputed yaw
+            rev = list(reversed([{ 'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0) } for p in cleaned]))
+            for i in range(len(rev)):
+                if i < len(rev) - 1:
+                    rev[i]['yaw_deg'] = bearing_deg(rev[i]['lat'], rev[i]['lon'], rev[i+1]['lat'], rev[i+1]['lon'])
+                elif i > 0:
+                    rev[i]['yaw_deg'] = rev[i-1]['yaw_deg']
             self._gps_routes[(str(to_id), str(from_id))] = rev
             return {'ok': True, 'size': len(cleaned)}
 
@@ -249,7 +257,7 @@ class NavBridge:
                     for p in pts:
                         local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
                         poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
-                    self._navigator.followWaypoints(poses)
+                    self._navigator.goThroughPoses(poses)
                 self._last_goal_id = None
                 self._status = 'active'
                 self._last_error = None
@@ -355,11 +363,9 @@ class NavBridge:
                         if not w:
                             raise ValueError(f'waypoint id not found in route: {wid}')
                         local = gps_point_to_local(self._helper, w)
-                        poses.append(
-                            build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad'])
-                        )
+                        poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
 
-                    self._navigator.followWaypoints(poses)
+                    self._navigator.goThroughPoses(poses)
                 self._last_goal_id = None
                 self._status = 'active'
                 self._last_error = None
@@ -630,8 +636,8 @@ class NavBridge:
                         dur = fb.estimated_time_remaining
                         eta = float(dur.sec) + float(dur.nanosec) / 1e9
 
-                    # Route progress if available
-                    if self._mode == 'route' and fb is not None and hasattr(fb, 'current_waypoint'):
+                    # Route progress if available (update regardless of mode)
+                    if fb is not None and hasattr(fb, 'current_waypoint'):
                         self._route_current = int(fb.current_waypoint)
 
                     return {

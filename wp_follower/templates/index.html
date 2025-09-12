@@ -587,9 +587,33 @@
               }
               arr.push(pt);
               const rs = document.getElementById('recording-status'); if (rs) rs.textContent = `Recording: ${arr.length} points`;
-              // Preview conversion to local for canvas drawing
+              // Preview conversion to local for canvas drawing, including straight-line connections to waypoints
               try {
-                const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arr }) });
+                let arrExt = arr.slice();
+                const selFrom = document.getElementById('route-from'); const selTo = document.getElementById('route-to');
+                const map = window._wpById || {};
+                const fromWp = map && selFrom ? map[selFrom.value] : null;
+                const toWp = map && selTo ? map[selTo.value] : null;
+                const step = 3.0;
+                if (fromWp && arrExt.length) {
+                  const a = {lat:Number(fromWp.lat), lon:Number(fromWp.lon)}; const b = {lat:arrExt[0].lat, lon:arrExt[0].lon};
+                  const d = distM(a,b);
+                  if (d > 2.0) {
+                    const n = Math.floor(d / step);
+                    const seg = [a]; for (let i=1;i<=n;i++){const tf=i/(n+1); seg.push({lat:a.lat+(b.lat-a.lat)*tf, lon:a.lon+(b.lon-a.lon)*tf});}
+                    arrExt = seg.concat(arrExt);
+                  }
+                }
+                if (toWp && arrExt.length) {
+                  const a = {lat:arrExt[arrExt.length-1].lat, lon:arrExt[arrExt.length-1].lon}; const b = {lat:Number(toWp.lat), lon:Number(toWp.lon)};
+                  const d = distM(a,b);
+                  if (d > 2.0) {
+                    const n = Math.floor(d / step);
+                    const seg = []; for (let i=1;i<=n;i++){const tf=i/(n+1); seg.push({lat:a.lat+(b.lat-a.lat)*tf, lon:a.lon+(b.lon-a.lon)*tf});}
+                    seg.push(b); arrExt = arrExt.concat(seg);
+                  }
+                }
+                const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arrExt }) });
                 const pj = await pr.json(); if (pj && pj.ok && Array.isArray(pj.points)) { window._previewLocal = pj.points; redrawCanvas(); }
               } catch {}
             }
@@ -707,7 +731,14 @@
           // Keep preview as the final recorded path
           try {
             const arr = window._recPoints || [];
-            const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arr }) });
+            // Extend with straight-line segments to/from selected waypoints for preview
+            const map = window._wpById || {}; const selFrom = document.getElementById('route-from'); const selTo = document.getElementById('route-to');
+            const fromWp = map && selFrom ? map[selFrom.value] : null; const toWp = map && selTo ? map[selTo.value] : null;
+            const distM = (a,b) => { const R=6371000.0, t=Math.PI/180; const dlat=(b.lat-a.lat)*t, dlon=(b.lon-a.lon)*t; const la1=a.lat*t, la2=b.lat*t; const s=Math.sin(dlat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dlon/2)**2; return 2*R*Math.atan2(Math.sqrt(s),Math.sqrt(1-s)); };
+            const step=3.0; let arrExt=arr.slice();
+            if (fromWp && arrExt.length){ const a={lat:Number(fromWp.lat),lon:Number(fromWp.lon)}; const b={lat:arrExt[0].lat,lon:arrExt[0].lon}; const d=distM(a,b); if (d>2.0){ const n=Math.floor(d/step); const seg=[a]; for(let i=1;i<=n;i++){const tf=i/(n+1); seg.push({lat:a.lat+(b.lat-a.lat)*tf, lon:a.lon+(b.lon-a.lon)*tf});} arrExt=seg.concat(arrExt);} }
+            if (toWp && arrExt.length){ const a={lat:arrExt[arrExt.length-1].lat,lon:arrExt[arrExt.length-1].lon}; const b={lat:Number(toWp.lat),lon:Number(toWp.lon)}; const d=distM(a,b); if (d>2.0){ const n=Math.floor(d/step); const seg=[]; for(let i=1;i<=n;i++){const tf=i/(n+1); seg.push({lat:a.lat+(b.lat-a.lat)*tf, lon:a.lon+(b.lon-a.lon)*tf});} seg.push(b); arrExt=arrExt.concat(seg);} }
+            const pr = await fetch('/api/gps_routes/preview_local', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ points: arrExt }) });
             const pj = await pr.json(); if (pj && pj.ok && Array.isArray(pj.points)) { window._previewLocal = pj.points; redrawCanvas(); }
           } catch {}
         };
