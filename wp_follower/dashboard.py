@@ -69,6 +69,9 @@ class NavBridge:
         self._gps_routes: Dict[Tuple[str, str], List[Dict]] = {}
         # Track active GPS route pair if following one
         self._active_gps_pair: Optional[Tuple[str, str]] = None
+        # Track active local path (map frame) for goThroughPoses to infer progress index
+        self._active_path_local: Optional[List[Tuple[float, float]]] = None
+        self._active_is_gps: bool = False
 
     # --- Waypoint management helpers ---
     def _gen_new_wp_id(self) -> str:
@@ -267,9 +270,11 @@ class NavBridge:
             try:
                 poses = []
                 with ROS_SPIN_LOCK:
+                    local_path: List[Tuple[float, float]] = []
                     for p in pts:
                         local = gps_point_to_local(self._helper, {'lat': p['lat'], 'lon': p['lon'], 'yaw_deg': p.get('yaw_deg', 0.0)})
                         poses.append(build_goal_pose(self._navigator, local['x'], local['y'], local['yaw_rad']))
+                        local_path.append((float(local['x']), float(local['y'])))
                     self._navigator.goThroughPoses(poses)
                 self._last_goal_id = None
                 self._status = 'active'
@@ -280,6 +285,8 @@ class NavBridge:
                 self._route_total = len(poses)
                 self._route_current = 0
                 self._active_gps_pair = (str(from_id), str(to_id))
+                self._active_path_local = local_path
+                self._active_is_gps = True
                 return {'ok': True, 'status': self._status, 'route_id': self._route_id}
             except Exception as e:
                 self._status = 'error'
