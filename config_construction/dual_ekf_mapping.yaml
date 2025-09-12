@@ -27,15 +27,15 @@ ekf_filter_node_odom:
 
 
     
-    # odom1: /zed/zed_node/pose/filtered # Adjust if namespacing ZED camera (e.g. /zed/odom)
-    # odom1_config: [true,  true,  false,  # X, Y, Z
-    #               false,  false,  true,  # Roll, Pitch, Yaw
-    #               false, false, false, # Vx, Vy, Vz
-    #               false, false, false,  # Vroll, Vpitch, Vyaw
-    #               false, false, false] # Ax, Ay, Az
-    # odom1_differential: true
-    # odom1_relative: true
-    # odom1_queue_size: 10
+    odom1: /zed/zed_node/odom # Adjust if namespacing ZED camera (e.g. /zed/odom)
+    odom1_config: [true,  true,  false,  # X, Y, Z
+                  false,  false,  false,  # Roll, Pitch, Yaw
+                  false, false, false, # Vx, Vy, Vz
+                  false, false, false,  # Vroll, Vpitch, Vyaw
+                  false, false, false] # Ax, Ay, Az
+    odom1_differential: true
+    odom1_relative: true
+    odom1_queue_size: 10
 
 
     imu0: /zed/zed_node/imu/data #/imu/data

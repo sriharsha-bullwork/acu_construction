@@ -1,27 +1,44 @@
 <?xml version="1.0"?>
+<!--
+  NavigateThroughPoses, no periodic replanning.
+  - Clear both costmaps ONCE at start (before planning).
+  - Compute a single global path once (SingleTrigger).
+  - FollowPath keeps using that path forever.
+  - Collision Monitor handles stopping; no replan on obstruction.
+-->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
 
-    <PipelineSequence name="navigate_through_poses_no_replan">
+    <Sequence name="Navigate_NoReplan">
 
-      <!-- PLAN ONCE for all waypoints -->
-      <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+      <!-- Execute this inner sequence only once -->
+      <SingleTrigger name="PlanOnce">
+        <Sequence name="PlanSequence">
 
-      <!-- FOLLOW + bounded wait recovery (NO replanning) -->
-      <RecoveryNode name="recovery_wait_upto_60s" number_of_retries="60">
-        <!-- Child 1: main task -->
-        <RateController hz="10.0">
-          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
-        </RateController>
+          <!-- Clear costmaps ONCE so no stale obstacles remain -->
+          <ClearEntireCostmap name="ClearLocalCostmap-Startup"
+                              service_name="local_costmap/clear_entirely_local_costmap"/>
+                              
+          <ClearEntireCostmap name="ClearGlobalCostmap-Startup"
+                              service_name="global_costmap/clear_entirely_global_costmap"/>
+                              
 
-        <!-- Child 2: wait 1s, retried up to 60 times (~60s total) -->
-        <Wait wait_duration="1.0"/>
-        <!-- If your build needs it, use:  <Wait time="1.0"/> -->
-      </RecoveryNode>
+          <!-- If you pass multiple waypoints, drop ones you’ve already reached -->
+          <RemovePassedGoals input_goals="{goals}"
+                             output_goals="{goals}"
+                             radius="1.5"/>
 
-      <GoalReached/>
+          <!-- One-shot global plan through poses -->
+          <ComputePathThroughPoses goals="{goals}"
+                                   path="{path}"
+                                   planner_id="GridBased"/>
+        </Sequence>
+      </SingleTrigger>
 
-    </PipelineSequence>
+      <!-- Track the fixed path (CM will gate cmd_vel to zero if blocked) -->
+      <FollowPath path="{path}" controller_id="FollowPath"/>
+
+    </Sequence>
 
   </BehaviorTree>
 </root>

@@ -127,15 +127,15 @@ def generate_launch_description():
 
     # Peripheral/vehicle nodes
     wheel_encoder_node = Node(
-        package='core_cpp',
-        executable='rpm_node',
-        name='wheel_encoder_node',
+        package='trailblazer_core_cpp',
+        executable='wheel_odomentry',
+        name='wheel_odomentry',
         output='screen',
     )
     can_node = Node(
-        package='core_cpp',
-        executable='can_node',
-        name='can_node',
+        package='trailblazer_core_cpp',
+        executable='can_bridge',
+        name='can_bridge',
         output='screen',
     )
 
@@ -153,7 +153,7 @@ def generate_launch_description():
     ld.add_action(ntrip_client)
     ld.add_action(rosbridge)
     ld.add_action(sllidar)
-    ld.add_action(zedx)
+    # ld.add_action(zedx)
 
 
 

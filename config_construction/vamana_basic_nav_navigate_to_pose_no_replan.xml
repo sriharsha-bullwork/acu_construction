@@ -1,27 +1,64 @@
-<?xml version="1.0"?>
-<root main_tree_to_execute="MainTree">
+\<root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
+    <RecoveryNode name="NavigateRecovery" number_of_retries="36">
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
 
-    <PipelineSequence name="navigate_no_replan">
+          <!-- ComputePathToPose with delayed recovery -->
+          <RecoveryNode name="ComputePathToPose" number_of_retries="36">
+            <!-- 1) Primary action -->
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"/>
+            <!-- 2) Single recovery subtree -->
+            <Sequence name="ComputeRecoveryWithDelay">
+              <!-- Wait 10 s before rerouting -->
+              <Wait wait_duration="10"/>
+              <ReactiveFallback name="ComputeRecoveryFallback">
+                <GoalUpdated/>
+                <ClearEntireCostmap
+                  name="ClearGlobalCostmap-Context"
+                  service_name="global_costmap/clear_entirely_global_costmap"/>
+              </ReactiveFallback>
+            </Sequence>
+          </RecoveryNode>
 
-      <!-- PLAN ONCE -->
-      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
-
-      <!-- FOLLOW + bounded wait recovery (NO replanning) -->
-      <RecoveryNode name="recovery_wait_upto_60s" number_of_retries="60">
-        <!-- Child 1: main task -->
-        <RateController hz="10.0">
-          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
         </RateController>
 
-        <!-- Child 2: wait 1s, retried up to 60 times (~60s total) -->
-        <Wait wait_duration="1.0"/>
-        <!-- If your build needs it, use:  <Wait time="1.0"/> -->
-      </RecoveryNode>
+        <!-- FollowPath with delayed recovery -->
+        <RecoveryNode name="FollowPath" number_of_retries="36">
+          <!-- 1) Primary action -->
+          <FollowPath
+            path="{path}"
+            controller_id="FollowPath"/>
+          <!-- 2) Single recovery subtree -->
+          <Sequence name="FollowRecoveryWithDelay">
+            <Wait wait_duration="10"/>
+            <ReactiveFallback name="FollowRecoveryFallback">
+              <GoalUpdated/>
+              <ClearEntireCostmap
+                name="ClearLocalCostmap-Context"
+                service_name="local_costmap/clear_entirely_local_costmap"/>
+            </ReactiveFallback>
+          </Sequence>
+        </RecoveryNode>
 
-      <GoalReached/>
+      </PipelineSequence>
 
-    </PipelineSequence>
+      <!-- Global system-level recovery (unchanged) -->
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap
+              name="ClearLocalCostmap-Subtree"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+          <Wait wait_duration="10"/>
+        </RoundRobin>
+      </ReactiveFallback>
 
+    </RecoveryNode>
   </BehaviorTree>
 </root>
